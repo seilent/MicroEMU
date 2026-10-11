@@ -1,0 +1,21 @@
+#!/usr/bin/bash
+set -eu
+
+user="${MICROEMU_USER:-${SUDO_USER:-armada}}"
+uid="${MICROEMU_USER_UID:-$(id -u "${user}")}"
+extensions="${MICROEMU_EXTENSIONS_DIR:-/var/lib/extensions}"
+stage="${MICROEMU_STAGE_DIR:-/var/tmp/microemu}"
+
+fail() { echo "device-apply: $*" >&2; exit 1; }
+
+steam=$(runuser -u "${user}" -- env XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user is-active gamescope-session-plus@steam.service 2>/dev/null || true)
+if [[ "${steam}" != active && -z "${MICROEMU_DEPLOY_ANY_SESSION:-}" ]]; then
+    fail "game mode is not active (gamescope-session-plus@steam ${steam:-unknown}), refusing; switch to game mode first"
+fi
+[[ ! -e "${extensions}/microemu.raw" ]] || fail "${extensions}/microemu.raw is installed, refusing to deploy the directory beside it; remove it with just off first"
+
+mkdir -p "${extensions}/microemu"
+rsync -a --delete --chown=root:root "${stage}/" "${extensions}/microemu/"
+systemd-sysext refresh
+systemctl restart polkit
+systemd-sysext status
