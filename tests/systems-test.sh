@@ -24,6 +24,7 @@ if [[ -f "${repo}/build/retroarch.sh" ]]; then
 fi
 
 count=$(xmllint --xpath 'count(/wrap/systemList/system)' "${systems}")
+(( count > 0 )) || fail "no systems"
 for ((i = 1; i <= count; i++)); do
     name=$(xmllint --xpath "string(/wrap/systemList/system[${i}]/name)" "${systems}")
     path=$(xmllint --xpath "string(/wrap/systemList/system[${i}]/path)" "${systems}")

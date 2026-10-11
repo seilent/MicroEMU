@@ -1,0 +1,131 @@
+#!/usr/bin/bash
+set -eu
+
+SESSION=gamescope-session-plus@microemu.service
+BIN="${MICROEMU_RETROARCH_BIN:-/usr/lib/microemu/retroarch/bin/retroarch}"
+LIB="${MICROEMU_RETROARCH_LIB:-/usr/lib/microemu/retroarch/lib64}"
+SHARE="${MICROEMU_RETROARCH_SHARE:-/usr/share/microemu/retroarch}"
+APPEND="${MICROEMU_RETROARCH_APPEND:-/usr/share/microemu/retroarch/microemu.cfg}"
+CONFIG="${MICROEMU_RETROARCH_CONFIG:-${HOME}/.config/microemu/retroarch/retroarch.cfg}"
+DATA="${MICROEMU_RETROARCH_DATA:-${HOME}/.local/share/microemu/retroarch}"
+GAME_FREE="${MICROEMU_GAME_FREE:-/usr/libexec/microemu/microemu-game-free}"
+
+log() { logger -t microemu-retroarch -- "$*" 2>/dev/null || true; }
+
+apply_to() {
+    local version=$1 target=$2 file
+    if [[ "${target}" == retroarch.cfg ]]; then
+        file="${CONFIG}"
+    else
+        file="$(dirname "${CONFIG}")/config/${target}/${target}.cfg"
+    fi
+    if [[ ! -e "${file}" ]]; then
+        awk -v v="${version}" -v t="${target}" '$1 == v && $2 == t && NF == 5 { found = 1 } END { exit !found }' "${SHARE}/defaults" || return 0
+        mkdir -p "$(dirname "${file}")"
+        : > "${file}"
+    fi
+    awk -v defaults="${SHARE}/defaults" -v version="${version}" -v target="${target}" '
+        BEGIN {
+            while ((getline line < defaults) > 0) {
+                n = split(line, f, " ")
+                if ((n == 5 || (n == 6 && f[6] == "present")) && f[1] == version && f[2] == target) {
+                    builtin[f[3]] = f[4]
+                    value[f[3]] = f[5]
+                    present[f[3]] = (n == 6)
+                    order[++count] = f[3]
+                }
+            }
+        }
+        /^[A-Za-z0-9_]+ = "/ {
+            key = substr($0, 1, index($0, " ") - 1)
+            if (key in value) {
+                seen[key] = 1
+                current = $0
+                sub(/^[^"]*"/, "", current)
+                sub(/"[[:space:]]*$/, "", current)
+                if (current == builtin[key]) {
+                    print key " = \"" value[key] "\""
+                    next
+                }
+            }
+        }
+        { print }
+        END {
+            for (i = 1; i <= count; i++) {
+                if (!(order[i] in seen) && !present[order[i]]) print order[i] " = \"" value[order[i]] "\""
+            }
+        }
+    ' "${file}" > "${file}.new"
+    if [[ -L "${file}" ]]; then
+        cat "${file}.new" > "${file}"
+        rm -f "${file}.new"
+    else
+        mv "${file}.new" "${file}"
+    fi
+}
+
+apply_defaults() {
+    local version target marker
+    [[ -f "${SHARE}/defaults" ]] || return 0
+    for version in $(awk '(NF == 5 || NF == 6) && $1 ~ /^[0-9]+$/ { print $1 }' "${SHARE}/defaults" | sort -un); do
+        marker="$(dirname "${CONFIG}")/.defaults-${version}"
+        [[ ! -e "${marker}" ]] || continue
+        for target in $(awk -v v="${version}" '(NF == 5 || NF == 6) && $1 == v { print $2 }' "${SHARE}/defaults" | awk '!seen[$0]++'); do
+            apply_to "${version}" "${target}"
+        done
+        : > "${marker}"
+    done
+}
+
+copy_missing() {
+    local from=$1 to=$2 src dest
+    [[ -d "${from}" ]] || return 0
+    while IFS= read -r -d '' src; do
+        dest="${to}/${src#"${from}/"}"
+        [[ ! -e "${dest}" ]] || continue
+        mkdir -p "$(dirname "${dest}")"
+        cp "${src}" "${dest}"
+    done < <(find "${from}" -type f \( -name '*.opt' -o -name '*.cfg' -o -name '*.rmp' \) -print0)
+}
+
+refuse() {
+    log "$*"
+    echo "microemu-retroarch: $*" >&2
+    exit 1
+}
+
+systemctl --user is-active --quiet "${SESSION}" || refuse "${SESSION} is not active, refusing"
+
+core=
+args=()
+while (( $# )); do
+    case "$1" in
+        -L)
+            [[ -z "${core}" && $# -ge 2 ]] || refuse "exactly one -L <core> is required"
+            core=$2
+            shift 2
+            continue
+            ;;
+        --libretro*|--config|--config=*|--appendconfig|--appendconfig=*)
+            refuse "option $1 is not accepted"
+            ;;
+    esac
+    [[ ! "$1" =~ ^-[^-]*[Lc] ]] || refuse "option $1 is not accepted"
+    args+=("$1")
+    shift
+done
+[[ -n "${core}" ]] || refuse "exactly one -L <core> is required"
+[[ "${core}" =~ ^/usr/lib64/libretro/[A-Za-z0-9_]+_libretro\.so$ ]] || refuse "core ${core} is not under /usr/lib64/libretro"
+
+mkdir -p "$(dirname "${CONFIG}")" "${DATA}/saves" "${DATA}/states" "${DATA}/system" "${DATA}/screenshots" \
+    "${DATA}/remaps" "${DATA}/playlists" "${DATA}/logs/runtime" "${DATA}/thumbnails" "${DATA}/downloads" "${DATA}/cache"
+[[ -e "${CONFIG}" ]] || : > "${CONFIG}"
+copy_missing "${SHARE}/config" "$(dirname "${CONFIG}")/config"
+copy_missing "${SHARE}/remaps" "${DATA}/remaps"
+apply_defaults
+
+unset LD_LIBRARY_PATH
+"${GAME_FREE}" || refuse "microemu-game.scope is still stopping"
+exec systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
+    --property=BindsTo="${SESSION}" --property=After="${SESSION}" --property=TimeoutStopSec=5 \
+    -- /usr/bin/env LD_LIBRARY_PATH="${LIB}" "${BIN}" -c "${CONFIG}" --appendconfig "${APPEND}" -L "${core}" "${args[@]}"

@@ -1,0 +1,23 @@
+1 retroarch.cfg video_driver gl vulkan
+1 retroarch.cfg video_scale_integer false true
+1 retroarch.cfg audio_block_frames 0 192
+1 retroarch.cfg fps_show false true
+1 retroarch.cfg sort_savefiles_enable true true
+1 retroarch.cfg sort_savestates_enable true true
+1 retroarch.cfg savestate_auto_index false true
+1 retroarch.cfg savestate_auto_load false true
+1 retroarch.cfg savestate_auto_save false true
+1 retroarch.cfg savestate_max_keep 0 10
+1 retroarch.cfg quit_on_close_content 0 1
+1 retroarch.cfg quit_press_twice true false
+1 retroarch.cfg menu_shader_pipeline 2 1
+1 retroarch.cfg video_shader_enable false true
+4 retroarch.cfg video_driver glcore vulkan present
+4 retroarch.cfg audio_block_frames 0 192 present
+4 retroarch.cfg savestate_max_keep 0 10 present
+4 retroarch.cfg menu_shader_pipeline 2 1 present
+4 bsnes-mercury video_threaded true false present
+4 PCSX-ReARMed video_threaded true false present
+4 Nestopia video_threaded true false present
+5 retroarch.cfg video_scale_integer true false present
+6 retroarch.cfg input_player1_analog_dpad_mode 0 1

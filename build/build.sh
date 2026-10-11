@@ -26,6 +26,8 @@ mkdir -p "${share}"
 cp -a sysext/. "${dist}/"
 
 esde=$(bash build/esde.sh build/cache/es-de "${dist}")
+retroarch=$(bash build/retroarch.sh build/cache/retroarch "${dist}")
+shaders=$(bash build/shaders.sh build/cache/shaders "${dist}" build/shaders-audit)
 
 echo "${version}" > "${share}/version"
 {
@@ -34,6 +36,8 @@ echo "${version}" > "${share}/version"
     echo "VERSION_ID=${VERSION_ID}"
     echo "MICROEMU_VERSION=${version}"
     echo "${esde}"
+    echo "${retroarch}"
+    echo "${shaders}"
     echo
     rpm -qa | sort
 } > "${share}/build-manifest"
