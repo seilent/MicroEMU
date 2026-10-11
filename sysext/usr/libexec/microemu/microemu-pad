@@ -1,0 +1,28 @@
+#!/usr/bin/bash
+set -eu
+
+ip=org.shadowblip.InputPlumber
+
+composite_devices() {
+    busctl --system --list tree "${ip}" | grep -E '^/org/shadowblip/InputPlumber/CompositeDevice[0-9]+$' || true
+}
+
+set_target() {
+    local path found=0
+    while read -r path; do
+        [[ -n "${path}" ]] || continue
+        found=1
+        if busctl --system call "${ip}" "${path}" org.shadowblip.Input.CompositeDevice SetTargetDevices as 2 xb360 keyboard; then
+            logger -t microemu-pad "set ${path} target to xb360 keyboard"
+        else
+            logger -t microemu-pad "failed to set ${path} target to xb360 keyboard"
+        fi
+    done < <(composite_devices)
+    (( found )) || logger -t microemu-pad "no composite device found"
+    return 0
+}
+
+case "${1:-}" in
+    xb360) set_target ;;
+    *) exit 1 ;;
+esac

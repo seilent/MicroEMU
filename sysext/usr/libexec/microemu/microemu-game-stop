@@ -1,0 +1,29 @@
+#!/usr/bin/bash
+set -u
+
+HOOKS="${MICROEMU_GAME_STOP_HOOKS:-/usr/libexec/microemu/game-stop.d}"
+BUDGET_MS="${MICROEMU_GAME_STOP_HOOKS_MS:-5000}"
+
+log() { logger -t microemu-game-stop -- "$*" 2>/dev/null || true; }
+
+now_ms() {
+    local t=${EPOCHREALTIME//[!0-9]/}
+    printf '%d\n' $(( 10#${t} / 1000 ))
+}
+
+deadline=$(( $(now_ms) + BUDGET_MS ))
+for hook in "${HOOKS}"/*; do
+    [[ -f "${hook}" && -x "${hook}" ]] || continue
+    left=$(( deadline - $(now_ms) ))
+    if (( left <= 0 )); then
+        log "hook budget spent, ${hook##*/} skipped"
+        continue
+    fi
+    ( timeout -k 1 "$(( left / 1000 )).$(printf '%03d' $(( left % 1000 )))" "${hook}" </dev/null >/dev/null; exit $? ) 2>/dev/null \
+        || log "${hook##*/} failed (rc=$?)"
+done
+
+systemctl --user reset-failed microemu-game.scope >/dev/null 2>&1
+systemctl --user stop microemu-game.scope >/dev/null 2>&1
+systemctl --user reset-failed microemu-game.scope >/dev/null 2>&1
+exit 0

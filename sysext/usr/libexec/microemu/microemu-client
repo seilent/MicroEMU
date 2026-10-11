@@ -1,0 +1,44 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+ESDE="${MICROEMU_ESDE:-/usr/lib/microemu/es-de/AppRun}"
+SYSTEMS="${MICROEMU_SYSTEMS_FILE:-/usr/share/microemu/es-de/es_systems.xml}"
+APPDATA="${MICROEMU_ESDE_APPDATA_DIR:-${HOME}/.local/share/microemu/ES-DE}"
+SESSION=gamescope-session-plus@microemu.service
+SWITCH=armada-session-switch@gamemode.service
+GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+
+log() { logger -t microemu-client -- "$*" 2>/dev/null || true; }
+
+setup_systems() {
+    local dir="${APPDATA}/custom_systems"
+    mkdir -p "${dir}"
+    rm -rf "${dir}/es_systems.xml" "${dir}/es_find_rules.xml"
+    ln -s "${SYSTEMS}" "${dir}/es_systems.xml"
+}
+
+"${GAME_STOP}"
+setup_systems
+export ESDE_APPDATA_DIR="${APPDATA}"
+
+if [[ -x "${ESDE}" ]]; then
+    rc=0
+    "${ESDE}" || rc=$?
+    log "es-de exited with ${rc}"
+else
+    log "${ESDE} missing"
+fi
+
+if [[ "$(systemctl --user show -p ActiveState --value "${SESSION}" 2>/dev/null)" == deactivating ]]; then
+    exec sleep infinity
+fi
+
+if ! systemctl start "${SWITCH}"; then
+    log "${SWITCH} failed, retrying in 2 s"
+    sleep 2
+    if ! systemctl start "${SWITCH}"; then
+        log "${SWITCH} failed twice, ending the session"
+        exit 1
+    fi
+fi
+exec sleep infinity

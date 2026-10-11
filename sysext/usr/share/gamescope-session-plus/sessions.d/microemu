@@ -1,0 +1,8 @@
+#! /bin/bash
+
+short_session_recover() {
+    systemctl --no-block start armada-session-switch@gamemode.service
+}
+
+export GAMESCOPE_BIN=/usr/libexec/microemu/microemu-gamescope
+export CLIENTCMD=/usr/libexec/microemu/microemu-client

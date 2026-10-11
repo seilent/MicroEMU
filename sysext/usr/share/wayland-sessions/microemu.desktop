@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=MicroEMU
+Comment=ES-DE emulation session
+Exec=gamescope-session-plus microemu
+Type=Application
+DesktopNames=microemu
+NoDisplay=true

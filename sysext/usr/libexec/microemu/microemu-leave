@@ -1,0 +1,19 @@
+#!/usr/bin/bash
+set -eu
+
+log() { logger -t microemu-leave -- "$*" 2>/dev/null || true; }
+
+case "${1:-}" in
+    session)
+        if ! systemctl --user is-active --quiet gamescope-session-plus@microemu.service; then
+            log "not in the microemu session, ignored"
+            exit 0
+        fi
+        systemctl --no-block start armada-session-switch@gamemode.service \
+            || log "armada-session-switch@gamemode.service did not start"
+        ;;
+    *)
+        echo "usage: microemu-leave session" >&2
+        exit 1
+        ;;
+esac

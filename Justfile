@@ -32,3 +32,9 @@ test:
     bash tests/device-apply-test.sh
     bash tests/device-off-test.sh
     bash tests/esde-test.sh
+    bash tests/session-test.sh
+    bash tests/systems-test.sh
+    bash tests/client-test.sh
+    bash tests/leave-test.sh
+    bash tests/stop-test.sh
+    bash tests/pad-test.sh
