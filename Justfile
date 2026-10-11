@@ -31,3 +31,4 @@ test:
     bash tests/build-test.sh
     bash tests/device-apply-test.sh
     bash tests/device-off-test.sh
+    bash tests/esde-test.sh

@@ -27,6 +27,7 @@ reset() {
     mkdir -p "${work}/build"
     cp "${repo}/build/build.sh" "${repo}/build/base.env" "${work}/build/"
     cp -a "${repo}/sysext" "${work}/"
+    printf '#!/usr/bin/bash\necho ESDE_VERSION=3.5.0\n' > "${work}/build/esde.sh"
     . "${repo}/build/base.env"
     printf 'ID=armada\nVERSION_ID="%s"\nIMAGE_VERSION="%s"\n' "${VERSION_ID}" "${IMAGE_VERSION}" \
         > "${MICROEMU_BUILDER_ROOT}/usr/lib/os-release"
@@ -50,6 +51,7 @@ run
 [[ ! -e "${work}/dist/old" ]] || fail "matching: old dist kept"
 [[ -f "${work}/dist/usr/lib/extension-release.d/extension-release.microemu" ]] || fail "matching: extension-release missing"
 grep -qx "MICROEMU_VERSION=test" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no version in the manifest"
+grep -qx "ESDE_VERSION=3.5.0" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no es-de lines in the manifest"
 
 reset
 sed -i 's/^VERSION_ID=.*/VERSION_ID=45/' "${ext}"

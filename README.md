@@ -2,24 +2,34 @@
 
 An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
 
-Status: builder and an empty sysext. Targets the AYANEO Pocket MICRO 2.
+Status: builder and a sysext carrying ES-DE 3.5.0, no session yet. Targets the AYANEO Pocket MICRO 2.
 
 ## Layout
 
 | Path | Content |
 |---|---|
 | `sysext/` | Static overlay, copied into `dist/` as is. `/usr` only, nothing under `/etc`. |
-| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, device scripts for the dev loop. |
-| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. |
+| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, device scripts for the dev loop. |
+| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host. |
 
 `dist/usr/share/microemu/` holds `version` and `build-manifest` (image digest, `IMAGE_VERSION`, `VERSION_ID`, microemu
-version, the builder's `rpm -qa`).
+version, the ES-DE version, asset sha256 and size, extracted tree size, the builder's `rpm -qa`).
+
+## ES-DE
+
+Upstream `ES-DE_aarch64.AppImage` 3.5.0, unmodified, extracted at build time to `/usr/lib/microemu/es-de/` and started
+through its `AppRun` (a link to `usr/bin/es-de`). No FUSE mount at run time. `build/esde.sh` pins the GitLab package
+file URL and the sha256 (132372640 byte asset), caches it in `build/cache/es-de/`, fetches again on a cache miss or a
+bad hash, refuses a download with another hash, checks the little endian ELF64 header, reads the squashfs offset from it (the end of the
+section header table) and unpacks it with `unsquashfs -o`. A failed download leaves nothing in the cache. The
+extraction runs in a work directory inside `dist/`. The tree is 324 MB. ES-DE's MIT license goes to
+`/usr/share/licenses/microemu/es-de.txt`; the third party licenses stay in the tree under `usr/share/es-de/licenses/`.
 
 ## Builder
 
 The builder container is `FROM` the exact Armada image the device runs, pinned by digest in `build/base.env`
-(`20261011.b995457`, the first with session drop-in support, the digest microdap pins). The image already carries what the build uses (`rpm`,
-`mksquashfs`), so the Containerfile installs nothing. Build host is any podman on
+(`20261011.b995457`, the first with session drop-in support, the digest microdap pins). The image already carries what the build uses (`curl`, `sha256sum`,
+`od`, `dd`, `du`, `unsquashfs`, `mksquashfs`, `rpm`), so the Containerfile installs nothing. Build host is any podman on
 arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount the interpreter into the container).
 
 ## Recipes
@@ -27,11 +37,11 @@ arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount t
 | Recipe | Does |
 |---|---|
 | `just base` | Reads `IMAGE_VERSION`, `VERSION_ID` and the booted image digest from the device into `build/base.env`. |
-| `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, writes `version` and `build-manifest`. |
+| `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh`, writes `version` and `build-manifest`. |
 | `just build` | `dist` plus `microemu-<ver>-armada<VERSION_ID>-arm64.raw` (squashfs, zstd). |
 | `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload`. |
 | `just off` | Copies `build/device-off` to `/var/tmp/microemu-off` and runs it as root on the device. |
-| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`. |
+| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`. |
 
 `MICROEMU_DEVICE` overrides `armada@pm2`. Root steps run through `ssh -t` and `sudo`.
 
@@ -71,4 +81,4 @@ the same steps as `build/device-off`.
 
 ## License
 
-GPL-2.0-or-later. See [LICENSE](LICENSE).
+GPL-2.0-or-later. See [LICENSE](LICENSE). ES-DE is MIT licensed.

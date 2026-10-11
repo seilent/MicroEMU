@@ -25,12 +25,15 @@ rm -rf "${dist}"
 mkdir -p "${share}"
 cp -a sysext/. "${dist}/"
 
+esde=$(bash build/esde.sh build/cache/es-de "${dist}")
+
 echo "${version}" > "${share}/version"
 {
     echo "BASE_IMAGE=${BASE_IMAGE}"
     echo "IMAGE_VERSION=${IMAGE_VERSION}"
     echo "VERSION_ID=${VERSION_ID}"
     echo "MICROEMU_VERSION=${version}"
+    echo "${esde}"
     echo
     rpm -qa | sort
 } > "${share}/build-manifest"
