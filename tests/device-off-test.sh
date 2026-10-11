@@ -28,7 +28,7 @@ shift
 case "$*" in
     "systemctl --user show -p ActiveState --value gamescope-session-plus@microemu.service")
         cat "${STATE}/microemu" ;;
-    "systemctl --user stop microemu-hotkeyd.service microemu-pad.service")
+    "systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service")
         exit 5 ;;
     "systemctl --user daemon-reload")
         exit 0 ;;
@@ -78,9 +78,10 @@ failures=0
 fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 reset() {
-    rm -rf "${STATE}" "${MICROEMU_EXTENSIONS_DIR}" "${MICROEMU_RUN_DIR}" "${MICROEMU_SDDM_CONF_DIR}"
+    rm -rf "${STATE}" "${MICROEMU_EXTENSIONS_DIR}" "${MICROEMU_RUN_DIR}" "${MICROEMU_SDDM_CONF_DIR}" "${MICROEMU_USER_RUNTIME_DIR}"
     mkdir -p "${STATE}" "${MICROEMU_EXTENSIONS_DIR}/microemu/usr" "${MICROEMU_EXTENSIONS_DIR}/microdap/usr" \
-        "${MICROEMU_RUN_DIR}" "${MICROEMU_SDDM_CONF_DIR}"
+        "${MICROEMU_RUN_DIR}" "${MICROEMU_SDDM_CONF_DIR}" "${MICROEMU_USER_RUNTIME_DIR}/microemu"
+    echo drift > "${MICROEMU_USER_RUNTIME_DIR}/microemu/drift"
     : > "${STATE}/calls"
     echo "$1" > "${STATE}/microemu"
     printf '[Autologin]\nUser=armada\nSession=%s\n' "$2" > "${AUTOLOGIN}"
@@ -105,20 +106,22 @@ calls() { cat "${STATE}/calls"; }
 removed() {
     [[ ! -e "${MICROEMU_EXTENSIONS_DIR}/microemu" ]] || fail "$1: microemu extension left: $(calls)"
     [[ ! -e "${MICROEMU_RUN_DIR}" ]] || fail "$1: /run/microemu left"
+    [[ ! -e "${MICROEMU_USER_RUNTIME_DIR}/microemu" ]] || fail "$1: \$XDG_RUNTIME_DIR/microemu left"
+    [[ -d "${MICROEMU_USER_RUNTIME_DIR}" ]] || fail "$1: \$XDG_RUNTIME_DIR removed"
     [[ -d "${MICROEMU_EXTENSIONS_DIR}/microdap/usr" ]] || fail "$1: microdap extension removed"
     [[ "$(count "^systemd-sysext refresh$")" == 1 ]] || fail "$1: no refresh: $(calls)"
     [[ "$(count "^systemctl daemon-reload$")" == 1 ]] || fail "$1: no system daemon-reload: $(calls)"
     [[ "$(count "^runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user daemon-reload$")" == 1 ]] \
         || fail "$1: no user daemon-reload as armada with XDG_RUNTIME_DIR: $(calls)"
     [[ "$(count "^systemctl restart polkit$")" == 1 ]] || fail "$1: no polkit restart: $(calls)"
-    [[ "$(count "systemctl --user stop microemu-hotkeyd.service microemu-pad.service$")" == 1 ]] \
+    [[ "$(count "systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service$")" == 1 ]] \
         || fail "$1: user units not stopped: $(calls)"
-    [[ "$(count "^runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service$")" == 1 ]] \
+    [[ "$(count "^runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service$")" == 1 ]] \
         || fail "$1: user stop not run as armada with XDG_RUNTIME_DIR: $(calls)"
     order=$(grep -n -e 'systemctl --user stop' -e '^systemd-sysext refresh$' -e '^systemctl daemon-reload$' \
         -e 'systemctl --user daemon-reload$' -e 'systemctl --user reset-failed' -e '^systemctl restart polkit$' \
         "${STATE}/calls" | cut -d: -f2-)
-    expected="runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service
+    expected="runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service
 systemd-sysext refresh
 systemctl daemon-reload
 runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user daemon-reload
@@ -131,6 +134,7 @@ systemctl restart polkit"
 kept() {
     [[ -d "${MICROEMU_EXTENSIONS_DIR}/microemu/usr" ]] || fail "$1: microemu extension removed"
     [[ -d "${MICROEMU_RUN_DIR}" ]] || fail "$1: /run/microemu removed"
+    [[ -f "${MICROEMU_USER_RUNTIME_DIR}/microemu/drift" ]] || fail "$1: \$XDG_RUNTIME_DIR/microemu removed"
     [[ "$(count "^systemd-sysext")" == 0 ]] || fail "$1: sysext touched: $(calls)"
     [[ "$(count "daemon-reload")" == 0 ]] || fail "$1: daemon-reload ran: $(calls)"
     [[ "$(count "restart polkit")" == 0 ]] || fail "$1: polkit restarted: $(calls)"
@@ -151,7 +155,7 @@ run
 [[ "$(count "^systemctl start --no-block armada-session-switch@gamemode.service$")" == 1 ]] \
     || fail "microemu active did not start the switch: $(calls)"
 [[ "$(count "^sleep 1$")" == 3 ]] || fail "microemu active waited $(count "^sleep") times, expected 3: $(calls)"
-[[ "$(grep -n 'armada-session-switch' "${STATE}/calls" | cut -d: -f1)" -lt "$(grep -n 'systemctl --user stop microemu-hotkeyd.service microemu-pad.service' "${STATE}/calls" | cut -d: -f1)" ]] \
+[[ "$(grep -n 'armada-session-switch' "${STATE}/calls" | cut -d: -f1)" -lt "$(grep -n 'systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service' "${STATE}/calls" | cut -d: -f1)" ]] \
     || fail "microemu active stopped user units before the switch: $(calls)"
 removed "microemu active"
 [[ "$(count "unmerge")" == 0 ]] || fail "microemu active ran unmerge: $(calls)"

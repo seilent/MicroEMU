@@ -48,8 +48,8 @@ for ((i = 0; ; i++)); do
 done
 (( settled )) || fail "${session} not inactive or failed, or autologin names microemu.desktop after ${wait_s} s, nothing changed"
 
-as_user systemctl --user stop microemu-hotkeyd.service microemu-pad.service 2>/dev/null || true
-rm -rf "${extensions}/microemu" "${extensions}/microemu.raw" "${run_dir}"
+as_user systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service 2>/dev/null || true
+rm -rf "${extensions}/microemu" "${extensions}/microemu.raw" "${run_dir}" "${runtime}/microemu"
 systemd-sysext refresh
 systemctl daemon-reload
 as_user systemctl --user daemon-reload || echo "device-off: systemctl --user daemon-reload failed for ${user}" >&2

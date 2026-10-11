@@ -31,6 +31,8 @@ shaders=$(bash build/shaders.sh build/cache/shaders "${dist}" build/shaders-audi
 theme=$(bash build/theme.sh build/cache/theme "${dist}")
 
 echo "${version}" > "${share}/version"
+paths=$(cd "${dist}" && find . \( -type f -o -type l \) | sed 's#^\.##')
+printf '%s\n' "${paths}" /usr/share/microemu/paths /usr/share/microemu/build-manifest | sort -u > "${share}/paths"
 {
     echo "BASE_IMAGE=${BASE_IMAGE}"
     echo "IMAGE_VERSION=${IMAGE_VERSION}"

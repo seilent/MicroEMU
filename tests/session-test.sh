@@ -47,6 +47,14 @@ grep -qx 'After=gamescope-session-plus@microemu.service' "${units}/microemu-pad.
 grep -qx 'Upholds=microemu-hotkeyd.service' "${units}/default.target.d/50-microemu.conf" || fail "default.target does not uphold microemu-hotkeyd"
 grep -qx 'Restart=always' "${units}/microemu-hotkeyd.service" || fail "microemu-hotkeyd does not restart"
 grep -qx 'RestartSec=10' "${units}/microemu-hotkeyd.service" || fail "microemu-hotkeyd restarts faster than every 10 s"
+grep -qx 'Wants=microemu-guard.service' "${units}/default.target.d/50-microemu.conf" || fail "default.target does not want microemu-guard"
+grep -qx 'RemainAfterExit=yes' "${units}/microemu-guard.service" || fail "microemu-guard is not a remaining oneshot"
+release="${sysext}/usr/lib/extension-release.d/extension-release.microemu"
+if [[ -n "$(find "${sysext}/usr/lib/systemd/system" "${sysext}/etc" -type f 2>/dev/null)" ]]; then
+    grep -qx 'EXTENSION_RELOAD_MANAGER=1' "${release}" || fail "system units shipped without EXTENSION_RELOAD_MANAGER=1"
+else
+    grep -q '^EXTENSION_RELOAD_MANAGER=' "${release}" && fail "EXTENSION_RELOAD_MANAGER set with no system unit to load" || true
+fi
 stop="${units}/gamescope-session-plus@microemu.service.d/30-microemu-stop.conf"
 for line in 'ExecStop=-/usr/libexec/microemu/microemu-stop' 'ExecStopPost=-/usr/libexec/microemu/microemu-game-stop' \
     'TimeoutStopSec=25' 'TimeoutStopFailureMode=terminate'; do

@@ -3,7 +3,8 @@
 An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
 
 Status: the `microemu` gamescope session with ES-DE as its client, the LC hold and
-volume key daemon, RetroArch with 13 Fedora cores and the Art Book Next theme, written, not run on a device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
+volume key daemon, RetroArch with 13 Fedora cores, the Art Book Next theme and the guard, written, not run on a
+device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
 (`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
 
 ## Layout
@@ -16,7 +17,8 @@ volume key daemon, RetroArch with 13 Fedora cores and the Art Book Next theme, w
 
 `dist/usr/share/microemu/` holds `version` and `build-manifest` (image digest, `IMAGE_VERSION`, `VERSION_ID`, microemu
 version, the ES-DE version, asset sha256 and size, extracted tree size, the RetroArch version and core count, the slang-shaders commit, Retro Crisis zip sha256 and shader file count, the theme
-revision, tarball sha256 and size, tree size, the builder's `rpm -qa`).
+revision, tarball sha256 and size, tree size, the builder's `rpm -qa`). `paths` lists every file and link
+the sysext ships.
 
 ## ES-DE
 
@@ -223,6 +225,25 @@ The buzz is 15 ms through `org.shadowblip.Output.ForceFeedback` on every composi
 lines instead of acting. Without `InputPlumber Keyboard` after 15 s the daemon exits 0 and systemd restarts it 10 s later
 (`RestartSec=10`); the same when the key stream ends. A volume stream that ends stops a running repeat.
 
+## Guard
+
+`microemu-guard.service`, a user oneshot wanted by `default.target` (`default.target.d/50-microemu.conf`), runs at each
+login and after every dev loop. A user unit, because the user manager starts after `systemd-sysext.service` merged the
+extension. On systemd 259 `systemd-sysext refresh` reloads the service manager only when a merged extension-release
+sets `EXTENSION_RELOAD_MANAGER=1`, so a system unit pulled in by a sysext `multi-user.target.d` drop-in would not load
+at that boot without the key. microemu ships no system unit that has to run at boot, so `extension-release.microemu` does
+not set it. It checks:
+
+- `/usr/libexec/armada/session-control list-sessions` runs and prints `microemu` (drop-in support on the image, the
+  microemu drop-in accepted).
+- No path in `/usr/share/microemu/paths` exists in the booted deployment (resolved from `ostree=` on the kernel command
+  line under `/sysroot`, its `usr/lib/os-release` required), and none in another extension under
+  `/var/lib/extensions/`. Only directory extensions are scanned; `.raw` images are logged as not checked.
+
+Each problem is a `user.warning` journal line (`journalctl --user -t microemu-guard`) and a line in
+`$XDG_RUNTIME_DIR/microemu/drift`; a clean run logs `no drift` and leaves no file. `just test-paths` compares `dist/`
+with microdap's `dist/` (`MICRODAP_DIST`, default `../MicroDAP/dist`) at build time.
+
 ## Builder
 
 The builder container is `FROM` the exact Armada image the device runs, pinned by digest in `build/base.env`
@@ -237,9 +258,10 @@ arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount t
 | `just base` | Reads `IMAGE_VERSION`, `VERSION_ID` and the booted image digest from the device into `build/base.env`. |
 | `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh`, `build/retroarch.sh` and `build/theme.sh`, writes `version` and `build-manifest`. |
 | `just build` | `dist` plus `microemu-<ver>-armada<VERSION_ID>-arm64.raw` (squashfs, zstd). |
-| `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload` and a restart of `microemu-hotkeyd.service`. |
+| `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload` and a restart of `microemu-hotkeyd.service` and `microemu-guard.service`. |
+| `just test-paths` | `tests/paths-test.sh` against microdap's `dist/`: fails on any path both ship. |
 | `just off` | Copies `build/device-off` to `/var/tmp/microemu-off` and runs it as root on the device. |
-| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`, `tests/theme-test.sh`. |
+| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`, `tests/theme-test.sh`, `tests/guard-test.sh`, `tests/paths-test.sh` (prints `skip` without `MICROEMU_OTHER_DIST`). |
 
 `MICROEMU_DEVICE` overrides `armada@pm2`. Root steps run through `ssh -t` and `sudo`.
 
@@ -253,8 +275,9 @@ arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount t
 2. Goes on when the state is `inactive` or `failed`, or empty while `user@<uid>.service` is not active, and no
    `/etc/sddm.conf.d/*.conf` has a `Session=microemu.desktop` line (whitespace and CR allowed). An empty state with the
    user manager up is a failed query and counts as running. On timeout it exits 1 and changes nothing.
-3. Stops `microemu-hotkeyd.service` and `microemu-pad.service` as the user.
-4. Removes `/var/lib/extensions/microemu`, `/var/lib/extensions/microemu.raw` and `/run/microemu` only, then `systemd-sysext refresh`, `systemctl
+3. Stops `microemu-hotkeyd.service`, `microemu-pad.service` and `microemu-guard.service` as the user.
+4. Removes `/var/lib/extensions/microemu`, `/var/lib/extensions/microemu.raw`, `/run/microemu` and the user's
+   `$XDG_RUNTIME_DIR/microemu` only, then `systemd-sysext refresh`, `systemctl
    daemon-reload` and `systemctl --user daemon-reload` as the user.
 5. Stops and resets `microemu-hotkeyd.service` again: `Upholds=` from `default.target` starts it again after step 3
    while the unit is still merged.

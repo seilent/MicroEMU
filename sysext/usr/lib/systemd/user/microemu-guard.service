@@ -1,0 +1,8 @@
+[Unit]
+Description=MicroEMU drop-in and path collision check
+ConditionPathExists=/usr/share/microemu/paths
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microemu/microemu-guard

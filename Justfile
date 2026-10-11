@@ -44,3 +44,8 @@ test:
     bash tests/retroarch-build-test.sh
     bash tests/shaders-test.sh
     bash tests/theme-test.sh
+    bash tests/guard-test.sh
+    bash tests/paths-test.sh
+
+test-paths:
+    MICROEMU_OTHER_DIST="${MICRODAP_DIST:-../MicroDAP/dist}" bash tests/paths-test.sh

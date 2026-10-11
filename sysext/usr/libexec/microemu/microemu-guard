@@ -1,0 +1,78 @@
+#!/usr/bin/bash
+set -u
+
+SHARE="${MICROEMU_SHARE:-/usr/share/microemu}"
+DRIFT="${MICROEMU_DRIFT:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu/drift}"
+SESSION_CONTROL="${MICROEMU_SESSION_CONTROL:-/usr/libexec/armada/session-control}"
+SYSROOT="${MICROEMU_SYSROOT:-/sysroot}"
+CMDLINE="${MICROEMU_CMDLINE:-/proc/cmdline}"
+EXTENSIONS="${MICROEMU_EXTENSIONS_DIR:-/var/lib/extensions}"
+PATHS="${SHARE}/paths"
+
+log() { logger -t microemu-guard -- "$*" 2>/dev/null || true; }
+
+drift() {
+    logger -t microemu-guard -p user.warning -- "$*" 2>/dev/null || true
+    printf '%s\n' "$*" >> "${DRIFT}"
+}
+
+deployment() {
+    local arg args=()
+    read -ra args < "${CMDLINE}"
+    for arg in "${args[@]}"; do
+        [[ "${arg}" == ostree=* ]] || continue
+        realpath -e "${SYSROOT}/${arg#ostree=}" 2>/dev/null
+        return
+    done
+    return 1
+}
+
+mkdir -p "$(dirname "${DRIFT}")"
+rm -f "${DRIFT}"
+
+if ! sessions=$("${SESSION_CONTROL}" list-sessions 2>/dev/null); then
+    drift "session-control has no drop-in support (list-sessions failed), the microemu session cannot be switched to"
+elif ! grep -qx microemu <<<"${sessions}"; then
+    drift "session-control list-sessions does not name microemu, the microemu drop-in was rejected"
+fi
+
+if [[ ! -r "${PATHS}" ]]; then
+    drift "${PATHS} missing, collisions not checked"
+    exit 0
+fi
+
+if ! deploy=$(deployment); then
+    drift "cannot resolve the booted deployment, image collisions not checked"
+elif [[ ! -f "${deploy}/usr/lib/os-release" ]]; then
+    drift "cannot read the booted image tree ${deploy}, image collisions not checked"
+else
+    log "booted deployment ${deploy}"
+    while IFS= read -r path; do
+        [[ -n "${path}" ]] || continue
+        if [[ -e "${deploy}${path}" || -L "${deploy}${path}" ]]; then
+            drift "${path} also exists in the booted image, microemu shadows it"
+        fi
+    done < "${PATHS}"
+fi
+
+for other in "${EXTENSIONS}"/*; do
+    if [[ -f "${other}" && "${other}" == *.raw && "${other##*/}" != microemu.raw ]]; then
+        log "${other##*/} is an image, its paths are not checked"
+        continue
+    fi
+    [[ -d "${other}" ]] || continue
+    [[ "${other##*/}" != microemu ]] || continue
+    while IFS= read -r path; do
+        [[ -n "${path}" ]] || continue
+        if [[ -e "${other}${path}" || -L "${other}${path}" ]]; then
+            drift "${path} also shipped by the ${other##*/} extension"
+        fi
+    done < "${PATHS}"
+done
+
+if [[ -s "${DRIFT}" ]]; then
+    log "$(grep -c . "${DRIFT}") problem(s), listed in ${DRIFT}"
+else
+    log "no drift"
+fi
+exit 0

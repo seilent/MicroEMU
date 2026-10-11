@@ -28,4 +28,4 @@ fi
 rsync -a --delete dist/ "${device}:/var/tmp/microemu/"
 rsync -a build/device-apply "${device}:/var/tmp/microemu-apply"
 ssh -t "${device}" sudo bash /var/tmp/microemu-apply
-ssh "${device}" 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user daemon-reload; systemctl --user restart microemu-hotkeyd.service'
+ssh "${device}" 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user daemon-reload; systemctl --user restart microemu-hotkeyd.service microemu-guard.service'
