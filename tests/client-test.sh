@@ -11,6 +11,9 @@ mkdir -p "${T}/bin" "${T}/share"
 export STATE="${T}/state"
 export MICROEMU_ESDE="${T}/es-de"
 export MICROEMU_SYSTEMS_FILE="${T}/share/es_systems.xml"
+export MICROEMU_THEMES_DIR="${T}/share/themes"
+mkdir -p "${MICROEMU_THEMES_DIR}/art-book-next-es-de"
+: > "${MICROEMU_THEMES_DIR}/README"
 export MICROEMU_ESDE_APPDATA_DIR="${T}/home/.local/share/microemu/ES-DE"
 : > "${MICROEMU_SYSTEMS_FILE}"
 custom="${MICROEMU_ESDE_APPDATA_DIR}/custom_systems"
@@ -20,6 +23,8 @@ cat > "${T}/es-de.stub" <<'STUB'
 echo "es-de" >> "${STATE}/calls"
 printf '%s\n' "${ESDE_APPDATA_DIR:-unset}" > "${STATE}/appdata"
 readlink "${ESDE_APPDATA_DIR}/custom_systems/es_systems.xml" > "${STATE}/link-at-start" 2>/dev/null || true
+readlink "${ESDE_APPDATA_DIR}/themes/art-book-next-es-de" > "${STATE}/theme-at-start" 2>/dev/null || true
+cp "${ESDE_APPDATA_DIR}/settings/es_settings.xml" "${STATE}/settings-at-start" 2>/dev/null || true
 exit "$(cat "${STATE}/esde_rc")"
 STUB
 cat > "${T}/bin/systemctl" <<'STUB'
@@ -145,6 +150,64 @@ reset deactivating
 HOME="${T}/home" MICROEMU_ESDE_APPDATA_DIR='' run
 [[ "$(cat "${STATE}/appdata")" == "${T}/home/.local/share/microemu/ES-DE" ]] || fail "default appdata is $(cat "${STATE}/appdata")"
 [[ ! -e "${T}/home/ES-DE" ]] || fail "default appdata: ~/ES-DE created"
+
+settings="${MICROEMU_ESDE_APPDATA_DIR}/settings/es_settings.xml"
+themes="${MICROEMU_ESDE_APPDATA_DIR}/themes"
+seeded='<?xml version="1.0"?>
+<string name="Theme" value="art-book-next-es-de" />
+<string name="ThemeColorScheme" value="dark-screenshots" />
+<string name="ThemeVariant" value="gamelist-list-metadata-cover" />
+<string name="ThemeFontSize" value="medium" />
+<string name="ThemeAspectRatio" value="3:2" />
+<string name="ApplicationUpdaterFrequency" value="never" />'
+
+reset deactivating
+run
+[[ "$(cat "${STATE}/theme-at-start")" == "${MICROEMU_THEMES_DIR}/art-book-next-es-de" ]] || fail "theme not linked before es-de started"
+[[ ! -e "${themes}/README" ]] || fail "a file in the themes directory was linked"
+[[ "$(cat "${STATE}/settings-at-start")" == "${seeded}" ]] || fail "fresh settings: $(cat "${STATE}/settings-at-start")"
+
+for kind in file link; do
+    reset deactivating
+    mkdir -p "${themes}"
+    case "${kind}" in
+        file) echo old > "${themes}/art-book-next-es-de" ;;
+        link) ln -s /nonexistent "${themes}/art-book-next-es-de" ;;
+    esac
+    mkdir -p "${themes}/user-theme"
+    run
+    [[ "$(readlink "${themes}/art-book-next-es-de")" == "${MICROEMU_THEMES_DIR}/art-book-next-es-de" ]] || fail "theme over a ${kind} not replaced"
+    [[ -d "${themes}/user-theme" ]] || fail "theme over a ${kind}: another theme removed"
+done
+
+reset deactivating
+mkdir -p "${themes}/art-book-next-es-de"
+echo mine > "${themes}/art-book-next-es-de/theme.xml"
+run
+[[ ! -L "${themes}/art-book-next-es-de" && "$(cat "${themes}/art-book-next-es-de/theme.xml")" == mine ]] || fail "user theme directory replaced"
+grep -qx "${themes}/art-book-next-es-de is a directory, kept instead of the shipped art-book-next-es-de" "${STATE}/log" \
+    || fail "user theme directory: no log line"
+
+reset deactivating
+mkdir -p "$(dirname "${settings}")"
+printf '<?xml version="1.0"?>\n<bool name="VSync" value="true" />\n<string name="Theme" value="linear-es-de" />\n<string name="ThemeFontSize" value="large" />' > "${settings}"
+run
+expected='<?xml version="1.0"?>
+<bool name="VSync" value="true" />
+<string name="Theme" value="linear-es-de" />
+<string name="ThemeFontSize" value="large" />
+<string name="ThemeColorScheme" value="dark-screenshots" />
+<string name="ThemeVariant" value="gamelist-list-metadata-cover" />
+<string name="ThemeAspectRatio" value="3:2" />
+<string name="ApplicationUpdaterFrequency" value="never" />'
+[[ "$(cat "${settings}")" == "${expected}" ]] || fail "partial settings: $(cat "${settings}")"
+
+reset deactivating
+mkdir -p "$(dirname "${settings}")"
+printf '%s\n' "${seeded}" | sed 's/dark-screenshots/oled-noir/; s/value="3:2"/value="automatic"/' > "${settings}"
+cp "${settings}" "${T}/full"
+run
+cmp -s "${settings}" "${T}/full" || fail "full settings changed: $(cat "${settings}")"
 
 if (( failures )); then
     echo "client-test: ${failures} failure(s)" >&2

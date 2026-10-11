@@ -43,3 +43,4 @@ test:
     bash tests/game-free-test.sh
     bash tests/retroarch-build-test.sh
     bash tests/shaders-test.sh
+    bash tests/theme-test.sh

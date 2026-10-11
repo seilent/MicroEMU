@@ -3,7 +3,7 @@
 An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
 
 Status: the `microemu` gamescope session with ES-DE as its client, the LC hold and
-volume key daemon, and RetroArch with 13 Fedora cores, written, not run on a device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
+volume key daemon, RetroArch with 13 Fedora cores and the Art Book Next theme, written, not run on a device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
 (`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
 
 ## Layout
@@ -11,12 +11,12 @@ volume key daemon, and RetroArch with 13 Fedora cores, written, not run on a dev
 | Path | Content |
 |---|---|
 | `sysext/` | Static overlay, copied into `dist/` as is. `/usr` only, nothing under `/etc`. |
-| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, device scripts for the dev loop. |
+| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, device scripts for the dev loop. |
 | `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host, `systems-test.sh` runs `xmllint`, `shaders-test.sh` runs `zip`, `unzip`, `curl` (file URLs) and `python3`. |
 
 `dist/usr/share/microemu/` holds `version` and `build-manifest` (image digest, `IMAGE_VERSION`, `VERSION_ID`, microemu
-version, the ES-DE version, asset sha256 and size, extracted tree size, the RetroArch version and core count, the slang-shaders commit, Retro Crisis zip sha256 and shader file count, the
-builder's `rpm -qa`).
+version, the ES-DE version, asset sha256 and size, extracted tree size, the RetroArch version and core count, the slang-shaders commit, Retro Crisis zip sha256 and shader file count, the theme
+revision, tarball sha256 and size, tree size, the builder's `rpm -qa`).
 
 ## ES-DE
 
@@ -171,6 +171,28 @@ extensions, platform and theme:
 | `virtualboy` | `mednafen_vb` |
 | `wonderswan`, `wonderswancolor` | `mednafen_wswan` |
 
+## Theme
+
+[Art Book Next (ES-DE Edition)](https://github.com/anthonycaccese/art-book-next-es-de) by Anthony Caccese, at
+`d772d07109701d9bd7c9fda305bfef6601105ab8`, unmodified. `build/theme.sh` fetches the GitHub archive tarball (sha256
+pinned, 219247637 bytes, cached in `build/cache/theme/`) and unpacks it to
+`/usr/share/microemu/es-de/themes/art-book-next-es-de/` (227 MB). The README's Credits and License sections go to
+`/usr/share/licenses/microemu/art-book-next.txt`.
+
+`microemu-client` links every theme there into `~/.local/share/microemu/ES-DE/themes/`, replacing a link or file of the
+same name; a real directory of that name (the user's own copy) is kept and logged, other themes stay. It adds these
+keys to `~/.local/share/microemu/ES-DE/settings/es_settings.xml` when they are missing, so later changes in ES-DE's
+menu stay:
+
+| Key | Value |
+|---|---|
+| `Theme` | `art-book-next-es-de` |
+| `ThemeColorScheme` | `dark-screenshots` |
+| `ThemeVariant` | `gamelist-list-metadata-cover` |
+| `ThemeFontSize` | `medium` |
+| `ThemeAspectRatio` | `3:2` |
+| `ApplicationUpdaterFrequency` | `never` (no online update check at start; microemu pins ES-DE) |
+
 ## Keys
 
 `microemu-hotkeyd.service`, a user unit kept up by `Upholds=` from `default.target.d/50-microemu.conf`, reads `KEY_F14`
@@ -205,7 +227,7 @@ lines instead of acting. Without `InputPlumber Keyboard` after 15 s the daemon e
 
 The builder container is `FROM` the exact Armada image the device runs, pinned by digest in `build/base.env`
 (`20261011.b995457`, the first with session drop-in support, the digest microdap pins). The image already carries what the build uses (`curl`, `sha256sum`,
-`od`, `dd`, `du`, `unsquashfs`, `mksquashfs`, `rpm`, `rpm2cpio`, `cpio`), so the Containerfile installs nothing. Build host is any podman on
+`od`, `dd`, `du`, `unsquashfs`, `mksquashfs`, `rpm`, `rpm2cpio`, `cpio`, `tar`), so the Containerfile installs nothing. Build host is any podman on
 arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount the interpreter into the container).
 
 ## Recipes
@@ -213,11 +235,11 @@ arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount t
 | Recipe | Does |
 |---|---|
 | `just base` | Reads `IMAGE_VERSION`, `VERSION_ID` and the booted image digest from the device into `build/base.env`. |
-| `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh` and `build/retroarch.sh`, writes `version` and `build-manifest`. |
+| `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh`, `build/retroarch.sh` and `build/theme.sh`, writes `version` and `build-manifest`. |
 | `just build` | `dist` plus `microemu-<ver>-armada<VERSION_ID>-arm64.raw` (squashfs, zstd). |
 | `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload` and a restart of `microemu-hotkeyd.service`. |
 | `just off` | Copies `build/device-off` to `/var/tmp/microemu-off` and runs it as root on the device. |
-| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`. |
+| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`, `tests/theme-test.sh`. |
 
 `MICROEMU_DEVICE` overrides `armada@pm2`. Root steps run through `ssh -t` and `sudo`.
 
@@ -259,4 +281,5 @@ the same steps as `build/device-off`.
 ## License
 
 GPL-2.0-or-later. See [LICENSE](LICENSE). ES-DE is MIT licensed. RetroArch, mbedtls and the cores keep their own
-licenses, shipped in `/usr/share/licenses/microemu/`.
+licenses, shipped in `/usr/share/licenses/microemu/`. The Art Book Next theme is by Anthony Caccese and the people
+credited in `art-book-next.txt`, licensed CC BY-NC-SA 2.0 (https://creativecommons.org/licenses/by-nc-sa/2.0/).

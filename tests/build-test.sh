@@ -30,6 +30,7 @@ reset() {
     printf '#!/usr/bin/bash\necho ESDE_VERSION=3.5.0\n' > "${work}/build/esde.sh"
     printf '#!/usr/bin/bash\necho RETROARCH_VERSION=1.22.0-20.fc44\n' > "${work}/build/retroarch.sh"
     printf '#!/usr/bin/bash\necho SLANG_SHADERS_COMMIT=abc\n' > "${work}/build/shaders.sh"
+    printf '#!/usr/bin/bash\necho THEME=art-book-next-es-de\n' > "${work}/build/theme.sh"
     . "${repo}/build/base.env"
     printf 'ID=armada\nVERSION_ID="%s"\nIMAGE_VERSION="%s"\n' "${VERSION_ID}" "${IMAGE_VERSION}" \
         > "${MICROEMU_BUILDER_ROOT}/usr/lib/os-release"
@@ -56,6 +57,7 @@ grep -qx "MICROEMU_VERSION=test" "${work}/dist/usr/share/microemu/build-manifest
 grep -qx "ESDE_VERSION=3.5.0" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no es-de lines in the manifest"
 grep -qx "RETROARCH_VERSION=1.22.0-20.fc44" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no retroarch lines in the manifest"
 grep -qx "SLANG_SHADERS_COMMIT=abc" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no shader lines in the manifest"
+grep -qx "THEME=art-book-next-es-de" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no theme lines in the manifest"
 
 reset
 sed -i 's/^VERSION_ID=.*/VERSION_ID=45/' "${ext}"

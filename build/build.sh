@@ -28,6 +28,7 @@ cp -a sysext/. "${dist}/"
 esde=$(bash build/esde.sh build/cache/es-de "${dist}")
 retroarch=$(bash build/retroarch.sh build/cache/retroarch "${dist}")
 shaders=$(bash build/shaders.sh build/cache/shaders "${dist}" build/shaders-audit)
+theme=$(bash build/theme.sh build/cache/theme "${dist}")
 
 echo "${version}" > "${share}/version"
 {
@@ -38,6 +39,7 @@ echo "${version}" > "${share}/version"
     echo "${esde}"
     echo "${retroarch}"
     echo "${shaders}"
+    echo "${theme}"
     echo
     rpm -qa | sort
 } > "${share}/build-manifest"

@@ -3,6 +3,7 @@ set -uo pipefail
 
 ESDE="${MICROEMU_ESDE:-/usr/lib/microemu/es-de/AppRun}"
 SYSTEMS="${MICROEMU_SYSTEMS_FILE:-/usr/share/microemu/es-de/es_systems.xml}"
+THEMES="${MICROEMU_THEMES_DIR:-/usr/share/microemu/es-de/themes}"
 APPDATA="${MICROEMU_ESDE_APPDATA_DIR:-${HOME}/.local/share/microemu/ES-DE}"
 SESSION=gamescope-session-plus@microemu.service
 SWITCH=armada-session-switch@gamemode.service
@@ -17,8 +18,43 @@ setup_systems() {
     ln -s "${SYSTEMS}" "${dir}/es_systems.xml"
 }
 
+setup_themes() {
+    local theme target
+    mkdir -p "${APPDATA}/themes"
+    for theme in "${THEMES}"/*; do
+        [[ -d "${theme}" ]] || continue
+        target="${APPDATA}/themes/${theme##*/}"
+        if [[ -d "${target}" && ! -L "${target}" ]]; then
+            log "${target} is a directory, kept instead of the shipped ${theme##*/}"
+            continue
+        fi
+        rm -f "${target}"
+        ln -s "${theme}" "${target}"
+    done
+}
+
+seed_settings() {
+    local file="${APPDATA}/settings/es_settings.xml" key value
+    mkdir -p "${APPDATA}/settings"
+    [[ -s "${file}" ]] || printf '<?xml version="1.0"?>\n' > "${file}"
+    [[ -z "$(tail -c 1 "${file}")" ]] || echo >> "${file}"
+    while read -r key value; do
+        grep -qE "<string[[:space:]]+name=\"${key}\"" "${file}" && continue
+        printf '<string name="%s" value="%s" />\n' "${key}" "${value}" >> "${file}"
+    done <<'SETTINGS'
+Theme art-book-next-es-de
+ThemeColorScheme dark-screenshots
+ThemeVariant gamelist-list-metadata-cover
+ThemeFontSize medium
+ThemeAspectRatio 3:2
+ApplicationUpdaterFrequency never
+SETTINGS
+}
+
 "${GAME_STOP}"
 setup_systems
+setup_themes
+seed_settings
 export ESDE_APPDATA_DIR="${APPDATA}"
 
 if [[ -x "${ESDE}" ]]; then
