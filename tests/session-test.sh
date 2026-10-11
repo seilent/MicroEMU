@@ -36,7 +36,7 @@ grep -qx 'Exec=gamescope-session-plus microemu' "${sysext}/usr/share/wayland-ses
     [[ "$(declare -f short_session_recover)" == *"systemctl --no-block start armada-session-switch@gamemode.service"* ]] || exit 14
 ) || fail "sessions.d/microemu check $? failed (11 client, 12 gamescope, 13 orientation, 14 recover)"
 
-for file in "${units}/microemu-pad.service" "${units}/gamescope-session-plus@microemu.service.d/"*.conf; do
+for file in "${units}"/*.service "${units}"/*.d/*.conf; do
     for exe in $(grep -oE '^Exec[A-Za-z]*=-?/[^ ]+' "${file}" | sed -E 's/^[^=]+=-?//'); do
         [[ -x "${sysext}${exe}" ]] || fail "$(basename "${file}"): ${exe} not shipped"
     done
@@ -44,6 +44,9 @@ done
 grep -qx 'Wants=microemu-pad.service' "${units}/gamescope-session-plus@microemu.service.d/20-microemu-pad.conf" || fail "session does not want microemu-pad"
 grep -qx 'BindsTo=gamescope-session-plus@microemu.service' "${units}/microemu-pad.service" || fail "microemu-pad not bound to the session"
 grep -qx 'After=gamescope-session-plus@microemu.service' "${units}/microemu-pad.service" || fail "microemu-pad not ordered after the session"
+grep -qx 'Upholds=microemu-hotkeyd.service' "${units}/default.target.d/50-microemu.conf" || fail "default.target does not uphold microemu-hotkeyd"
+grep -qx 'Restart=always' "${units}/microemu-hotkeyd.service" || fail "microemu-hotkeyd does not restart"
+grep -qx 'RestartSec=10' "${units}/microemu-hotkeyd.service" || fail "microemu-hotkeyd restarts faster than every 10 s"
 stop="${units}/gamescope-session-plus@microemu.service.d/30-microemu-stop.conf"
 for line in 'ExecStop=-/usr/libexec/microemu/microemu-stop' 'ExecStopPost=-/usr/libexec/microemu/microemu-game-stop' \
     'TimeoutStopSec=25' 'TimeoutStopFailureMode=terminate'; do

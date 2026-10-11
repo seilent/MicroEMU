@@ -38,3 +38,4 @@ test:
     bash tests/leave-test.sh
     bash tests/stop-test.sh
     bash tests/pad-test.sh
+    bash tests/hotkeyd-test.sh

@@ -1,0 +1,422 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+LONG_MS="${MICROEMU_HOTKEYD_LONG_MS:-1000}"
+CONFIRM_MS="${MICROEMU_HOTKEYD_CONFIRM_MS:-3000}"
+DEVICE_WAIT_SEC="${MICROEMU_HOTKEYD_DEVICE_WAIT_SEC:-15}"
+DEVICE_NAME="${MICROEMU_HOTKEYD_DEVICE_NAME:-InputPlumber Keyboard}"
+VOLUME_NAMES="${MICROEMU_HOTKEYD_VOLUME_NAMES:-gpio-keys pm8941_resin}"
+VOLUME_STEP="${MICROEMU_HOTKEYD_VOLUME_STEP:-5}"
+REPEAT_DELAY_MS="${MICROEMU_HOTKEYD_REPEAT_DELAY_MS:-400}"
+REPEAT_MS="${MICROEMU_HOTKEYD_REPEAT_MS:-100}"
+POLL_MS="${MICROEMU_HOTKEYD_POLL_MS:-50}"
+BUZZ_LEVEL="${MICROEMU_HOTKEYD_BUZZ_LEVEL:-1.0}"
+BUZZ_MS="${MICROEMU_HOTKEYD_BUZZ_MS:-15}"
+DRY_RUN="${MICROEMU_HOTKEYD_DRY_RUN:-0}"
+KEY="${MICROEMU_HOTKEYD_KEY:-KEY_F14}"
+DEV_INPUT="${MICROEMU_DEV_INPUT:-/dev/input}"
+SYS_INPUT="${MICROEMU_SYS_INPUT:-/sys/class/input}"
+SWITCH_LOCK="${MICROEMU_SWITCH_LOCK:-/run/armada/session-switch.lock}"
+LEAVE="${MICROEMU_LEAVE:-/usr/libexec/microemu/microemu-leave}"
+GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+
+log() { logger -t microemu-hotkeyd -- "$*"; }
+
+now_ms() {
+    local t=${EPOCHREALTIME//[!0-9]/}
+    printf '%d\n' $(( 10#${t} / 1000 ))
+}
+
+event_ms() {
+    local re='time ([0-9]+)\.([0-9]+),' usec
+    [[ "$1" =~ ${re} ]] || return 0
+    usec="${BASH_REMATCH[2]}000000"
+    printf '%d\n' $(( BASH_REMATCH[1] * 1000 + 10#${usec:0:3} ))
+}
+
+anchor_ms() {
+    if [[ -n "$1" ]] && (( $2 - $1 >= 0 && $2 - $1 <= 60000 )); then
+        printf '%d\n' "$1"
+    else
+        printf '%d\n' "$2"
+    fi
+}
+
+gap_ms() {
+    if [[ -n "$1" && -n "$3" ]] && (( $3 - $1 >= 0 && $3 - $1 <= 60000 )); then
+        printf '%d\n' $(( $3 - $1 ))
+    else
+        printf '%d\n' $(( $4 - $2 ))
+    fi
+}
+
+ms_sec() { printf '%d.%03d' $((10#$1 / 1000)) $((10#$1 % 1000)); }
+
+run() {
+    if [[ "${DRY_RUN}" == 1 ]]; then
+        log "would: $*"
+        return 0
+    fi
+    "$@" || log "failed: $* (rc=$?)"
+}
+
+rumble() {
+    local level=$1 path
+    shift
+    for path in "$@"; do
+        busctl --system call org.shadowblip.InputPlumber "${path}" org.shadowblip.Output.ForceFeedback Rumble d "${level}" \
+            >/dev/null 2>&1 || true
+    done
+}
+
+buzz() {
+    if [[ "${DRY_RUN}" == 1 ]]; then
+        log "would: buzz ${BUZZ_MS}"
+        return 0
+    fi
+    (
+        local devs
+        mapfile -t devs < <(busctl --system tree --list org.shadowblip.InputPlumber 2>/dev/null \
+            | grep -E '^/org/shadowblip/InputPlumber/CompositeDevice[0-9]+$')
+        (( ${#devs[@]} )) || exit 0
+        trap 'rumble 0 "${devs[@]}"; exit 0' INT TERM
+        rumble "${BUZZ_LEVEL}" "${devs[@]}"
+        sleep "$(ms_sec "${BUZZ_MS}")"
+        rumble 0 "${devs[@]}"
+    ) 3<&- </dev/null >/dev/null 2>&1 &
+}
+
+key_device() {
+    local dev name
+    for dev in "${DEV_INPUT}"/event*; do
+        [[ -e "${dev}" ]] || continue
+        name=$(cat "${SYS_INPUT}/$(basename "${dev}")/device/name" 2>/dev/null) || continue
+        [[ "${name}" == "$1" ]] || continue
+        printf '%s\n' "${dev}"
+        return 0
+    done
+    return 1
+}
+
+wait_for_key_device() {
+    local waited=0
+    while :; do
+        key_device "${DEVICE_NAME}" && return 0
+        (( waited >= DEVICE_WAIT_SEC )) && return 1
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+watch_device() {
+    local tag=$1 line
+    evtest "$2" 2>/dev/null | while IFS= read -r line; do
+        printf '%s %s\n' "${tag}" "${line}"
+    done
+    printf '%s end\n' "${tag}"
+}
+
+session_state() {
+    if systemctl --user is-active --quiet gamescope-session-plus@microemu.service; then
+        echo microemu
+    elif systemctl --user is-active --quiet gamescope-session-plus@steam.service; then
+        echo game
+    elif systemctl --user is-active --quiet gamescope-session-plus@microdap.service; then
+        echo microdap
+    else
+        echo other
+    fi
+}
+
+title_running() { pgrep -f 'SteamLaunch AppId=' >/dev/null 2>&1; }
+
+plasma_running() { pgrep -x plasmashell >/dev/null 2>&1; }
+
+game_running() { systemctl --user is-active --quiet microemu-game.scope; }
+
+lock_held() {
+    local rc=0
+    [[ -e "${SWITCH_LOCK}" ]] || return 1
+    flock -n -E 75 "${SWITCH_LOCK}" true 2>/dev/null || rc=$?
+    case "${rc}" in
+        0) return 1 ;;
+        75) return 0 ;;
+        *) log "flock on ${SWITCH_LOCK} failed (rc=${rc}), lock taken as free"; return 1 ;;
+    esac
+}
+
+last_hold_ms=0
+switch_end_ms=0
+stop_end_ms=0
+stop_pid=
+volume_pid=
+volume_steps=0
+volume_key=
+volume_next_ms=0
+
+switch_to_microemu() {
+    buzz
+    run systemctl --no-block start armada-session-switch@microemu.service
+}
+
+start_game_stop() {
+    buzz
+    if [[ "${DRY_RUN}" == 1 ]]; then
+        log "would: ${GAME_STOP}"
+        return 0
+    fi
+    "${GAME_STOP}" 3<&- </dev/null >/dev/null 2>&1 &
+    stop_pid=$!
+}
+
+reap() {
+    if [[ -n "${stop_pid}" ]] && ! kill -0 "${stop_pid}" 2>/dev/null; then
+        wait "${stop_pid}" 2>/dev/null
+        stop_pid=
+        stop_end_ms=$(now_ms)
+        log "game stop done"
+    fi
+    if [[ -n "${volume_pid}" ]] && ! kill -0 "${volume_pid}" 2>/dev/null; then
+        wait "${volume_pid}" 2>/dev/null
+        volume_pid=
+        flush_volume
+    fi
+}
+
+stale_press() {
+    if [[ -n "${stop_pid}" ]]; then
+        log "game stop running, press dropped"
+        return 0
+    fi
+    if (( $1 <= stop_end_ms )); then
+        log "press during a game stop, dropped"
+        return 0
+    fi
+    if lock_held; then
+        switch_end_ms=$(now_ms)
+    fi
+    if (( $1 <= switch_end_ms )); then
+        log "press during a switch, dropped"
+        return 0
+    fi
+    return 1
+}
+
+on_hold() {
+    local now session
+    if [[ -n "${stop_pid}" ]]; then
+        log "game stop running, hold dropped"
+        return 0
+    fi
+    if lock_held; then
+        switch_end_ms=$(now_ms)
+        log "switch in progress, hold dropped"
+        return 0
+    fi
+    session=$(session_state)
+    log "hold in ${session}"
+    case "${session}" in
+        game)
+            if title_running; then
+                now=$(now_ms)
+                if (( now - last_hold_ms > CONFIRM_MS )); then
+                    last_hold_ms=${now}
+                    log "hold ignored, title running, hold again within $((CONFIRM_MS / 1000)) s to switch"
+                    return 0
+                fi
+            fi
+            last_hold_ms=0
+            switch_to_microemu
+            ;;
+        microemu)
+            if game_running; then
+                start_game_stop
+            else
+                buzz
+                run "${LEAVE}" session
+            fi
+            ;;
+        microdap)
+            log "hold in microdap, ignored"
+            ;;
+        other)
+            if plasma_running; then
+                switch_to_microemu
+            else
+                log "hold in an unknown session, ignored"
+            fi
+            ;;
+    esac
+}
+
+flush_volume() {
+    local steps=${volume_steps} sign=+
+    [[ -z "${volume_pid}" ]] || return 0
+    (( steps != 0 )) || return 0
+    volume_steps=0
+    if (( steps < 0 )); then
+        sign=-
+        steps=$(( -steps ))
+    fi
+    if [[ "${DRY_RUN}" == 1 ]]; then
+        log "would: wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ ${steps}%${sign}"
+        return 0
+    fi
+    wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ "${steps}%${sign}" 3<&- </dev/null >/dev/null 2>&1 &
+    volume_pid=$!
+}
+
+volume_add() {
+    case "$1" in
+        KEY_VOLUMEUP) volume_steps=$(( volume_steps + VOLUME_STEP )) ;;
+        KEY_VOLUMEDOWN) volume_steps=$(( volume_steps - VOLUME_STEP )) ;;
+    esac
+    flush_volume
+}
+
+on_volume() {
+    local line=$1 key
+    case "${line}" in
+        *"(KEY_VOLUMEUP), value "*) key=KEY_VOLUMEUP ;;
+        *"(KEY_VOLUMEDOWN), value "*) key=KEY_VOLUMEDOWN ;;
+        *) return 0 ;;
+    esac
+    case "${line}" in
+        *", value 1"*)
+            if [[ "$(session_state)" != microemu ]]; then
+                volume_key=
+                return 0
+            fi
+            volume_key=${key}
+            volume_next_ms=$(( $(now_ms) + REPEAT_DELAY_MS ))
+            volume_add "${key}"
+            ;;
+        *", value 0"*)
+            [[ "${volume_key}" == "${key}" ]] && volume_key=
+            ;;
+    esac
+}
+
+next_wait_ms() {
+    local now=$1 rem='' r
+    if [[ "${state}" == held ]]; then
+        rem=$(( press_at + LONG_MS - now ))
+    fi
+    if [[ -n "${volume_key}" ]]; then
+        r=$(( volume_next_ms - now ))
+        if [[ -z "${rem}" ]] || (( r < rem )); then rem=${r}; fi
+    fi
+    if [[ -n "${stop_pid}" || -n "${volume_pid}" ]]; then
+        if [[ -z "${rem}" ]] || (( POLL_MS < rem )); then rem=${POLL_MS}; fi
+    fi
+    printf '%s\n' "${rem}"
+}
+
+main() {
+    local dev name vdev line partial read_result rem now press_ms press_raw press_ev release_ms release_raw held_for
+    local vdevs=()
+
+    trap 'exit 0' INT TERM
+
+    dev=$(wait_for_key_device) || {
+        log "${DEVICE_NAME} not found after ${DEVICE_WAIT_SEC} s"
+        return 0
+    }
+    for name in ${VOLUME_NAMES}; do
+        if vdev=$(key_device "${name}"); then
+            vdevs+=("${vdev}")
+        else
+            log "volume device ${name} not found"
+        fi
+    done
+
+    log "watching ${dev} for ${KEY}, hold ${LONG_MS} ms, volume ${vdevs[*]:-none}, dry run ${DRY_RUN}"
+    exec 3< <(
+        watch_device key "${dev}" &
+        for vdev in "${vdevs[@]}"; do
+            watch_device volume "${vdev}" &
+        done
+        wait
+    )
+    state=idle
+    partial=
+    press_ms=0
+    press_raw=
+    press_ev=0
+    press_at=0
+
+    while :; do
+        reap
+        now=$(now_ms)
+        if [[ "${state}" == held ]] && (( press_at + LONG_MS - now <= 0 )) && ! read -t 0 -u 3 2>/dev/null; then
+            on_hold
+            state=draining
+            continue
+        fi
+        if [[ -n "${volume_key}" ]] && (( volume_next_ms - now <= 0 )); then
+            volume_next_ms=$(( now + REPEAT_MS ))
+            volume_add "${volume_key}"
+            continue
+        fi
+
+        read_result=0
+        rem=$(next_wait_ms "${now}")
+        if [[ -n "${rem}" ]]; then
+            (( rem > 0 )) || rem=1
+            IFS= read -r -u 3 -t "$(ms_sec "${rem}")" line 2>/dev/null || read_result=$?
+        else
+            IFS= read -r -u 3 line 2>/dev/null || read_result=$?
+        fi
+
+        if (( read_result > 128 )); then
+            partial+=${line}
+            continue
+        elif (( read_result != 0 )); then
+            log "event stream ended"
+            return 1
+        fi
+        line=${partial}${line}
+        partial=
+
+        case "${line}" in
+            "key end")
+                log "event stream ended"
+                return 1
+                ;;
+            "volume end")
+                volume_key=
+                log "volume stream ended"
+                ;;
+            volume\ *)
+                on_volume "${line}"
+                ;;
+            key\ *"(${KEY}), value 1"*)
+                [[ "${state}" == idle ]] || continue
+                press_ms=$(now_ms)
+                press_raw=$(event_ms "${line}")
+                press_ev=${press_raw:-${press_ms}}
+                press_at=$(anchor_ms "${press_raw}" "${press_ms}")
+                if stale_press "${press_ev}"; then
+                    state=draining
+                    continue
+                fi
+                state=held
+                ;;
+            key\ *"(${KEY}), value 0"*)
+                if [[ "${state}" == held ]]; then
+                    release_ms=$(now_ms)
+                    release_raw=$(event_ms "${line}")
+                    held_for=$(gap_ms "${press_raw}" "${press_ms}" "${release_raw}" "${release_ms}")
+                    if (( held_for >= LONG_MS )); then
+                        on_hold
+                    fi
+                fi
+                state=idle
+                ;;
+        esac
+    done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

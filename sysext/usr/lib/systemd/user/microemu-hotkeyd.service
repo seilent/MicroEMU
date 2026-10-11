@@ -1,0 +1,8 @@
+[Unit]
+Description=MicroEMU LC hold and volume key daemon
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/microemu/microemu-hotkeyd
+Restart=always
+RestartSec=10

@@ -2,8 +2,8 @@
 
 An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
 
-Status: the `microemu` gamescope session with ES-DE as its client, written, not run
-on a device. No emulators yet. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
+Status: the `microemu` gamescope session with ES-DE as its client and the LC hold
+and volume key daemon, written, not run on a device. No emulators yet. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
 (`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
 
 ## Layout
@@ -50,6 +50,36 @@ command in it is a `/usr/libexec/microemu/` wrapper. ES-DE's settings, game list
 live in `~/.local/share/microemu/ES-DE`; `~/ES-DE` is not used. The controller type goes back to the configured one when
 session-control switches to game mode.
 
+## Keys
+
+`microemu-hotkeyd.service`, a user unit kept up by `Upholds=` from `default.target.d/50-microemu.conf`, reads `KEY_F14`
+(LC, `MICROEMU_HOTKEYD_KEY` overrides) on `InputPlumber Keyboard` and the volume keys on `gpio-keys` and `pm8941_resin`
+with non grabbing `evtest`. A hold is 1000 ms, timed from the press event; a release without a press is dropped.
+
+| Session at the hold | LC hold |
+|---|---|
+| game mode | buzz, `systemctl --no-block start armada-session-switch@microemu.service` |
+| game mode, a title running (`SteamLaunch AppId=`) | first hold logged; a second within 3 s switches |
+| microemu, `microemu-game.scope` active | buzz, `microemu-game-stop` in the background; holds while it runs are dropped |
+| microemu | buzz, `microemu-leave session` |
+| microdap | logged, ignored |
+| Plasma (`plasmashell` running) | buzz, switch to microemu |
+| anything else | logged, ignored |
+
+Before acting, the daemon checks `/run/armada/session-switch.lock` with `flock -n -E 75`; exit 75 (held) drops the hold
+with no buzz (`switch in progress, hold dropped`), any other error is logged and the lock taken as free, a missing
+lock file counts as free. It keeps the last time it saw the lock held and the time the last game stop
+ended, and drops any press whose event time is at or before either. Taps do nothing.
+
+Volume keys act only in the microemu session. Each press adds 5%, a held key repeats after 400 ms, then every 100 ms.
+One `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ <n>%+` (or `-`) runs at a time; steps that arrive meanwhile go into
+the next call as one sum.
+
+The buzz is 15 ms through `org.shadowblip.Output.ForceFeedback` on every composite device. Dry run: drop-in
+`~/.config/systemd/user/microemu-hotkeyd.service.d/dryrun.conf` with `Environment=MICROEMU_HOTKEYD_DRY_RUN=1` logs `would:`
+lines instead of acting. Without `InputPlumber Keyboard` after 15 s the daemon exits 0 and systemd restarts it 10 s later
+(`RestartSec=10`); the same when the key stream ends. A volume stream that ends stops a running repeat.
+
 ## Builder
 
 The builder container is `FROM` the exact Armada image the device runs, pinned by digest in `build/base.env`
@@ -64,9 +94,9 @@ arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount t
 | `just base` | Reads `IMAGE_VERSION`, `VERSION_ID` and the booted image digest from the device into `build/base.env`. |
 | `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh`, writes `version` and `build-manifest`. |
 | `just build` | `dist` plus `microemu-<ver>-armada<VERSION_ID>-arm64.raw` (squashfs, zstd). |
-| `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload`. |
+| `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload` and a restart of `microemu-hotkeyd.service`. |
 | `just off` | Copies `build/device-off` to `/var/tmp/microemu-off` and runs it as root on the device. |
-| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`. |
+| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`. |
 
 `MICROEMU_DEVICE` overrides `armada@pm2`. Root steps run through `ssh -t` and `sudo`.
 
