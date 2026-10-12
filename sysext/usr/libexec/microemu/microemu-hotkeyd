@@ -19,6 +19,7 @@ SYS_INPUT="${MICROEMU_SYS_INPUT:-/sys/class/input}"
 SWITCH_LOCK="${MICROEMU_SWITCH_LOCK:-/run/armada/session-switch.lock}"
 LEAVE="${MICROEMU_LEAVE:-/usr/libexec/microemu/microemu-leave}"
 GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+OSD_FIFO="${MICROEMU_OSD_FIFO:-${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/osd}"
 
 log() { logger -t microemu-hotkeyd -- "$*"; }
 
@@ -156,6 +157,8 @@ switch_end_ms=0
 stop_end_ms=0
 stop_pid=
 volume_pid=
+osd_pid=
+osd_pending=0
 volume_steps=0
 volume_key=
 volume_next_ms=0
@@ -185,8 +188,14 @@ reap() {
     if [[ -n "${volume_pid}" ]] && ! kill -0 "${volume_pid}" 2>/dev/null; then
         wait "${volume_pid}" 2>/dev/null
         volume_pid=
+        osd_pending=1
         flush_volume
     fi
+    if [[ -n "${osd_pid}" ]] && ! kill -0 "${osd_pid}" 2>/dev/null; then
+        wait "${osd_pid}" 2>/dev/null
+        osd_pid=
+    fi
+    osd_notify
 }
 
 stale_press() {
@@ -255,6 +264,32 @@ on_hold() {
     esac
 }
 
+osd_level() {
+    local re='^Volume: ([0-9]+)\.([0-9]{2})' level
+    [[ "$1" =~ ${re} ]] || return 1
+    if [[ "$1" == *"[MUTED]"* ]]; then
+        echo 0
+        return 0
+    fi
+    level=$(( 10#${BASH_REMATCH[1]} * 100 + 10#${BASH_REMATCH[2]} ))
+    (( level <= 100 )) || level=100
+    echo "${level}"
+}
+
+osd_notify() {
+    [[ -z "${osd_pid}" ]] || return 0
+    (( osd_pending )) || return 0
+    osd_pending=0
+    [[ -p "${OSD_FIFO}" ]] || return 0
+    (
+        out=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null) || exit 0
+        level=$(osd_level "${out}") || exit 0
+        [[ -p "${OSD_FIFO}" ]] || exit 0
+        printf '%s\n' "${level}" | dd of="${OSD_FIFO}" oflag=nonblock conv=nocreat,notrunc status=none
+    ) 3<&- </dev/null >/dev/null 2>&1 &
+    osd_pid=$!
+}
+
 flush_volume() {
     local steps=${volume_steps} sign=+
     [[ -z "${volume_pid}" ]] || return 0
@@ -312,7 +347,7 @@ next_wait_ms() {
         r=$(( volume_next_ms - now ))
         if [[ -z "${rem}" ]] || (( r < rem )); then rem=${r}; fi
     fi
-    if [[ -n "${stop_pid}" || -n "${volume_pid}" ]]; then
+    if [[ -n "${stop_pid}" || -n "${volume_pid}" || -n "${osd_pid}" ]]; then
         if [[ -z "${rem}" ]] || (( POLL_MS < rem )); then rem=${POLL_MS}; fi
     fi
     printf '%s\n' "${rem}"

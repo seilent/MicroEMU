@@ -39,6 +39,8 @@ test:
     bash tests/stop-test.sh
     bash tests/pad-test.sh
     bash tests/hotkeyd-test.sh
+    bash tests/osd-test.sh
+    bash tests/osd-build-test.sh
     bash tests/retroarch-test.sh
     bash tests/game-free-test.sh
     bash tests/retroarch-build-test.sh

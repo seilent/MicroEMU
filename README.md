@@ -10,13 +10,13 @@ image with session drop-in support (`/usr/lib/armada/sessions.d`, `armada-sessio
 | Path | Content |
 |---|---|
 | `sysext/` | Static overlay, copied into `dist/` as is, without `__pycache__` or `*.pyc`. `/usr` only, nothing under `/etc`. |
-| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, `stub.sh`, device scripts for the dev loop. |
+| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, `osd.sh`, `stub.sh`, device scripts for the dev loop. |
 | `android/restrictions-stub/` | Source of the `restrictions` binder stub and its init `.rc`, built by `build/stub.sh`. |
-| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host, `systems-test.sh` runs `xmllint`, `stub-test.sh` and `gapps-install-test.sh` run `zip` and `unzip`, `sync-test.sh` runs `python3` with `sqlite3`, `play-update-test.sh` runs `python3`, `shaders-test.sh` runs `zip`, `unzip`, `curl` (file URLs) and `python3`. |
+| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host, `systems-test.sh` runs `xmllint`, `stub-test.sh` and `gapps-install-test.sh` run `zip` and `unzip`, `sync-test.sh` runs `python3` with `sqlite3`, `play-update-test.sh` runs `python3`, `osd-test.sh` runs `python3` with `gi` (Pango, PangoCairo) and `cairo` and renders the pill when `dist/` holds the theme fonts and `speaker.svg` (`MICROEMU_OSD_TEST_THEME` and `MICROEMU_OSD_TEST_SPEAKER` override), `shaders-test.sh` runs `zip`, `unzip`, `curl` (file URLs) and `python3`. |
 
 `dist/usr/share/microemu/` holds `version` and `build-manifest` (image digest, `IMAGE_VERSION`, `VERSION_ID`, microemu
 version, the ES-DE version, asset sha256 and size, extracted tree size, the RetroArch version and core count, the slang-shaders commit, Retro Crisis zip sha256 and shader file count, the theme
-revision, tarball sha256 and size, tree size, the builder's `rpm -qa`). `paths` lists every file and link
+revision, tarball sha256 and size, tree size, the speaker glyph's revision and sha256, the builder's `rpm -qa`). `paths` lists every file and link
 the sysext ships.
 
 ## ES-DE
@@ -40,7 +40,7 @@ session-control through `/usr/lib/armada/sessions.d/microemu.conf` (`DESKTOP=mic
 |---|---|
 | `usr/share/gamescope-session-plus/sessions.d/microemu` | `CLIENTCMD=/usr/libexec/microemu/microemu-client`, `GAMESCOPE_BIN=/usr/libexec/microemu/microemu-gamescope`, no `ORIENTATION` (landscape from the panel). `short_session_recover` starts the switch to game mode with `--no-block`. |
 | `microemu-gamescope` | Drops `--steam` and execs `/usr/bin/gamescope` with the other arguments. Without `--steam`, gamescope focuses ES-DE and the windows it starts with no `STEAM_GAME` atoms. |
-| `microemu-client` | Runs `microemu-game-stop` to clear what a previous session left, links `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` to the shipped file (replacing a file, link or directory there) and removes `es_find_rules.xml` there, then runs ES-DE with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. While `$XDG_RUNTIME_DIR/microemu/esde-reload` exists and `microemu-game.scope` is not active (checked every second), it removes the file, sends ES-DE SIGTERM and starts it again in place, on the Android Games gamelist (`StartupSystem` `androidgames`, `StartupView` `gamelist` in `es_settings.xml`; the previous lines are kept in `settings/microemu-startup.saved` and put back after that ES-DE exits, or at the next client start, unless the startup setting was changed meanwhile). When ES-DE exits and the unit is `deactivating`, it blocks in `sleep infinity`. Otherwise (ES-DE quit, crash or missing) it runs `systemctl start armada-session-switch@gamemode.service`, retries once after 2 s, then blocks in `sleep infinity`; after a second failure it exits 1. |
+| `microemu-client` | Runs `microemu-game-stop` to clear what a previous session left, links `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` to the shipped file (replacing a file, link or directory there) and removes `es_find_rules.xml` there, then starts `microemu-osd` (Volume pill) and runs ES-DE with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. While `$XDG_RUNTIME_DIR/microemu/esde-reload` exists and `microemu-game.scope` is not active (checked every second), it removes the file, sends ES-DE SIGTERM and starts it again in place, on the Android Games gamelist (`StartupSystem` `androidgames`, `StartupView` `gamelist` in `es_settings.xml`; the previous lines are kept in `settings/microemu-startup.saved` and put back after that ES-DE exits, or at the next client start, unless the startup setting was changed meanwhile). When ES-DE exits and the unit is `deactivating`, it blocks in `sleep infinity`. Otherwise (ES-DE quit, crash or missing) it runs `systemctl start armada-session-switch@gamemode.service`, retries once after 2 s, then blocks in `sleep infinity`; after a second failure it exits 1. |
 | `microemu-leave session` | Inside the microemu session, `systemctl --no-block start armada-session-switch@gamemode.service`, then returns. Elsewhere a log line. |
 | `microemu-game-stop` | Runs every executable in `/usr/libexec/microemu/game-stop.d/` in name order within 5 s in total (each hook gets what is left, SIGKILL 1 s after its bound; one that would start after the 5 s is skipped; a failure is logged, the rest still run), then `systemctl --user reset-failed`, `stop`, `reset-failed` of `microemu-game.scope`. A game that outlives the scope stops through a hook there. |
 | `microemu-stop` | `ExecStop` of the session, bounded at 15 s (SIGKILL 2 s later): `microemu-game-stop`, then SIGTERM to the process whose `/proc/<pid>/exe` is `/usr/lib/microemu/es-de/usr/bin/es-de` and whose cgroup is the microemu session unit, every 500 ms up to 6 times or until it exits, then a blocking stop of `microemu-play.service` within what is left. |
@@ -450,7 +450,29 @@ ended, and drops any press whose event time is at or before either. Taps do noth
 
 Volume keys act only in the microemu session. Each press adds 5%, a held key repeats after 400 ms, then every 100 ms.
 One `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ <n>%+` (or `-`) runs at a time; steps that arrive meanwhile go into
-the next call as one sum.
+the next call as one sum. After each call, while `$XDG_RUNTIME_DIR/microemu/osd` is a FIFO, a background job reads
+`wpctl get-volume @DEFAULT_AUDIO_SINK@` and writes the level (0 to 100, 0 when muted) to it with a non blocking open;
+with no reader or a full pipe the line is dropped. One read runs at a time; a call that ends meanwhile gets a new read
+after it, so the last line is the latest level.
+
+## Volume pill
+
+`/usr/libexec/microemu/microemu-osd`, started by `microemu-client` before ES-DE with `GDK_BACKEND=x11` (python3, GTK 3,
+cairo, Pango; no accessibility bridge, `NO_AT_BRIDGE=1`). It replaces whatever is at `$XDG_RUNTIME_DIR/microemu/osd` with a FIFO and reads levels from it. Each level
+shows a pill in the top row style of Art Book Next (`systemstatus`, 3:2, medium font size): `111111ee`, radius
+0.01 W, the speaker glyph and `N%` (`X` at 0) in `ffffff` Mulish Light, 0.7 of a 0.0417 H row, padding 0.0097 W left,
+0.0109 W right and 0.0104 H top and bottom, the text cell as wide as `100%`. It sits on the system status row, 0.005 W
+(ES-DE's entry spacing) left of where ES-DE's status pill starts with every entry shown (Bluetooth, Wi-Fi, cellular,
+battery and its percentage). It stays 1000 ms after the last level, then fades out in 250 ms.
+
+The window is the root's size, transparent outside the pill, with an empty input shape, `STEAM_OVERLAY=1` (set with
+`xprop` before the first map) and no focus, so gamescope draws it 1:1 over ES-DE and games as its overlay and input
+stays with the app. It is mapped only while the pill shows. The font comes from the shipped theme's `_inc/fonts`
+through `$XDG_RUNTIME_DIR/microemu/osd-fonts.conf` (the system config plus that dir), set for this process only. The
+glyph is `/usr/share/microemu/osd/speaker.svg`, Art Book Next (Batocera Edition)'s `menu-icon-sound.svg`, fetched by
+`build/osd.sh` at a pinned revision and sha256. If `microemu-osd` exits, the client logs `microemu-osd exited with <rc>`
+and the session goes on without it. `microemu-osd --render <png> <width> <height> <level> [<alpha>]` draws one frame
+to a PNG.
 
 The buzz is 15 ms through `org.shadowblip.Output.ForceFeedback` on every composite device. Dry run: drop-in
 `~/.config/systemd/user/microemu-hotkeyd.service.d/dryrun.conf` with `Environment=MICROEMU_HOTKEYD_DRY_RUN=1` logs `would:`
@@ -542,5 +564,6 @@ the same steps as `build/device-off`.
 
 GPL-2.0-or-later. See [LICENSE](LICENSE). ES-DE is MIT licensed. RetroArch, mbedtls and the cores keep their own
 licenses, shipped in `/usr/share/licenses/microemu/`. The Art Book Next theme is by Anthony Caccese and the people
-credited in `art-book-next.txt`, licensed CC BY-NC-SA 2.0 (https://creativecommons.org/licenses/by-nc-sa/2.0/). Google's APKs are
+credited in `art-book-next.txt`, licensed CC BY-NC-SA 2.0; the volume glyph is from its Batocera Edition, credits in
+`art-book-next-speaker.txt`, same license (https://creativecommons.org/licenses/by-nc-sa/2.0/). Google's APKs are
 not shipped: `microemu-gapps-install` downloads them on the device.

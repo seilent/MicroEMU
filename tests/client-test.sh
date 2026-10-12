@@ -31,6 +31,7 @@ cp "${ESDE_APPDATA_DIR}/settings/es_settings.xml" "${STATE}/settings-at-start" 2
 n=$(( $(cat "${STATE}/esde_runs" 2>/dev/null || echo 0) + 1 ))
 echo "${n}" > "${STATE}/esde_runs"
 cp "${ESDE_APPDATA_DIR}/settings/es_settings.xml" "${STATE}/settings-at-start-${n}" 2>/dev/null || true
+[[ ! -e "${STATE}/esde-sleep" ]] || /usr/bin/sleep "$(cat "${STATE}/esde-sleep")"
 [[ ! -e "${STATE}/pick-${n}" ]] || sed -i "s/value=\"androidgames\"/value=\"$(cat "${STATE}/pick-${n}")\"/" "${ESDE_APPDATA_DIR}/settings/es_settings.xml"
 if [[ "$(cat "${STATE}/reload-on-run" 2>/dev/null)" == "${n}" ]]; then
     trap 'echo "es-de term scope=$([[ -e "${STATE}/scope" ]] && echo active || echo inactive)" >> "${STATE}/calls"; exit 0' TERM
@@ -69,7 +70,14 @@ cat > "${T}/bin/logger" <<'STUB'
 shift 3
 echo "$*" >> "${STATE}/log"
 STUB
-chmod 0755 "${T}/bin/"* "${T}/es-de.stub"
+cat > "${T}/osd" <<'STUB'
+#!/usr/bin/bash
+echo "osd GDK_BACKEND=${GDK_BACKEND:-unset}" >> "${STATE}/osd"
+[[ ! -e "${STATE}/osd-exit" ]] || exit "$(cat "${STATE}/osd-exit")"
+exec /usr/bin/sleep 2
+STUB
+chmod 0755 "${T}/bin/"* "${T}/es-de.stub" "${T}/osd"
+export MICROEMU_OSD="${T}/osd"
 export PATH="${T}/bin:${PATH}"
 export MICROEMU_GAME_STOP="${T}/bin/microemu-game-stop"
 
@@ -282,6 +290,26 @@ run
 [[ "$(count "^es-de$")" == 1 ]] || fail "stale marker: es-de ran $(count "^es-de$") times"
 [[ ! -e "${reload_marker}" ]] || fail "stale marker kept"
 grep -q "restarting es-de" "${STATE}/log" && fail "stale marker restarted es-de"
+
+reset active
+echo 1 > "${STATE}/reload-on-run"
+run
+[[ "$(count "^es-de$")" == 2 ]] || fail "osd: es-de ran $(count "^es-de$") times"
+[[ "$(cat "${STATE}/osd" 2>/dev/null)" == "osd GDK_BACKEND=x11" ]] || fail "osd: not started once with GDK_BACKEND=x11 across an es-de restart: $(cat "${STATE}/osd" 2>/dev/null)"
+grep -q "microemu-osd exited" "${STATE}/log" && fail "osd: exit logged while it runs: $(cat "${STATE}/log")"
+
+reset deactivating
+echo 3 > "${STATE}/osd-exit"
+echo 0.5 > "${STATE}/esde-sleep"
+run
+grep -qx "microemu-osd exited with 3" "${STATE}/log" || fail "osd exit: not logged: $(cat "${STATE}/log")"
+[[ "$(grep -c "microemu-osd exited" "${STATE}/log")" == 1 ]] || fail "osd exit: logged more than once"
+[[ "$(cat "${STATE}/osd")" == "osd GDK_BACKEND=x11" ]] || fail "osd exit: restarted: $(cat "${STATE}/osd")"
+
+reset deactivating
+MICROEMU_OSD="${T}/absent-osd" run
+grep -qx "${T}/absent-osd missing" "${STATE}/log" || fail "osd missing: no log line"
+[[ "$(count "^es-de$")" == 1 ]] || fail "osd missing: es-de ran $(count "^es-de$") times"
 
 if (( failures )); then
     echo "client-test: ${failures} failure(s)" >&2

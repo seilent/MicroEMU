@@ -8,6 +8,7 @@ APPDATA="${MICROEMU_ESDE_APPDATA_DIR:-${HOME}/.local/share/microemu/ES-DE}"
 SESSION=gamescope-session-plus@microemu.service
 SWITCH=armada-session-switch@gamemode.service
 GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+OSD="${MICROEMU_OSD:-/usr/libexec/microemu/microemu-osd}"
 RELOAD="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/esde-reload"
 POLL_S="${MICROEMU_CLIENT_POLL_S:-1}"
 SETTINGS="${APPDATA}/settings/es_settings.xml"
@@ -74,6 +75,25 @@ restore_startup() {
     rm -f "${SAVED}"
 }
 
+start_osd() {
+    osd_pid=
+    if [[ ! -x "${OSD}" ]]; then
+        log "${OSD} missing"
+        return 0
+    fi
+    GDK_BACKEND=x11 "${OSD}" 3<&- </dev/null &
+    osd_pid=$!
+}
+
+check_osd() {
+    local rc=0
+    [[ -n "${osd_pid}" ]] || return 0
+    kill -0 "${osd_pid}" 2>/dev/null && return 0
+    wait "${osd_pid}" || rc=$?
+    osd_pid=
+    log "microemu-osd exited with ${rc}"
+}
+
 run_esde() {
     local pid hold
     reload=0
@@ -81,6 +101,7 @@ run_esde() {
     "${ESDE}" &
     pid=$!
     while kill -0 "${pid}" 2>/dev/null; do
+        check_osd
         if (( ! reload )) && [[ -e "${RELOAD}" ]] && ! systemctl --user is-active --quiet microemu-game.scope; then
             reload=1
             rm -f "${RELOAD}"
@@ -102,6 +123,7 @@ seed_settings
 restore_startup
 rm -f "${RELOAD}"
 export ESDE_APPDATA_DIR="${APPDATA}"
+start_osd
 
 if [[ -x "${ESDE}" ]]; then
     while :; do

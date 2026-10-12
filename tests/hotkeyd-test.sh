@@ -85,6 +85,17 @@ EOF
 
 cat > "${T}/bin/wpctl" <<'EOF'
 #!/usr/bin/bash
+if [[ "$1" == get-volume ]]; then
+    [[ -e "${STATE}/get-running" ]] && echo overlap >> "${STATE}/get-overlap"
+    : > "${STATE}/get-running"
+    echo "wpctl $*" >> "${STATE}/calls"
+    out=$(cat "${STATE}/volume")
+    sleep "$(cat "${STATE}/get-sleep")"
+    rm -f "${STATE}/get-running"
+    echo "${out}"
+    exit 0
+fi
+[[ ! -e "${STATE}/volume-step" ]] || echo "Volume: 0.$(( $(grep -c '^wpctl set-volume' "${STATE}/calls") + 1 ))0" > "${STATE}/volume"
 [[ -e "${STATE}/wpctl-running" ]] && echo overlap >> "${STATE}/wpctl-overlap"
 : > "${STATE}/wpctl-running"
 echo "wpctl $*" >> "${STATE}/calls"
@@ -121,6 +132,9 @@ export MICROEMU_DEV_INPUT="${T}/nodev" MICROEMU_SYS_INPUT="${T}/nosys"
 export MICROEMU_SWITCH_LOCK="${T}/session-switch.lock"
 export MICROEMU_LEAVE="${T}/bin/microemu-leave"
 export MICROEMU_GAME_STOP="${T}/bin/microemu-game-stop"
+osd="${T}/osd/osd"
+mkdir -p "${T}/osd"
+export MICROEMU_OSD_FIFO="${osd}"
 : > "${MICROEMU_SWITCH_LOCK}"
 
 failures=0
@@ -144,6 +158,9 @@ run_case() {
     echo "${PLASMA:-0}" > "${STATE}/plasma"
     echo "${WPCTL_SLEEP:-0}" > "${STATE}/wpctl-sleep"
     echo "${STOP_SLEEP:-0}" > "${STATE}/stop-sleep"
+    echo "${VOLUME:-Volume: 0.42}" > "${STATE}/volume"
+    echo "${GET_SLEEP:-0}" > "${STATE}/get-sleep"
+    [[ -z "${VOLUME_STEP:-}" ]] || : > "${STATE}/volume-step"
     [[ -z "${GAME:-}" ]] || : > "${STATE}/game"
     [[ -z "${PLAY:-}" ]] || echo "${PLAY}" > "${STATE}/play"
     [[ -z "${LOCKED:-}" ]] || : > "${STATE}/lock-held"
@@ -344,6 +361,60 @@ expect_log "volume stream ended"
 DRY=1 run_case "volume dry run" microemu "sleep 0.4" "up;up-release"
 expect_calls 0
 expect_log "would: wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"
+
+osd_lines() {
+    local line
+    : > "${STATE}/osd-lines"
+    while IFS= read -r -t 0.5 -u "${osd_fd}" line; do
+        echo "${line}" >> "${STATE}/osd-lines"
+    done
+    cat "${STATE}/osd-lines"
+}
+
+get="wpctl get-volume @DEFAULT_AUDIO_SINK@"
+mkfifo "${osd}"
+exec {osd_fd}<>"${osd}"
+
+run_case "osd level after a press" microemu "sleep 0.6" "up;sleep 0.05;up-release"
+expect_call "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"
+expect_call "${get}"
+[[ "$(sed -n 2p "${STATE}/calls")" == "${get}" ]] || fail "get-volume not after the set: $(cat "${STATE}/calls")"
+[[ "$(osd_lines)" == 42 ]] || fail "osd got '$(cat "${STATE}/osd-lines")', expected 42"
+
+VOLUME="Volume: 1.00" run_case "osd full volume" microemu "sleep 0.6" "up;up-release"
+[[ "$(osd_lines)" == 100 ]] || fail "osd got '$(cat "${STATE}/osd-lines")', expected 100"
+
+VOLUME="Volume: 0.07" run_case "osd low volume" microemu "sleep 0.6" "" "down;down-release"
+[[ "$(osd_lines)" == 7 ]] || fail "osd got '$(cat "${STATE}/osd-lines")', expected 7"
+
+VOLUME="Volume: 0.42 [MUTED]" run_case "osd muted" microemu "sleep 0.6" "up;up-release"
+[[ "$(osd_lines)" == 0 ]] || fail "osd got '$(cat "${STATE}/osd-lines")', expected 0"
+
+VOLUME="garbage" run_case "osd unreadable volume" microemu "sleep 0.6" "up;up-release"
+[[ -z "$(osd_lines)" ]] || fail "osd got '$(cat "${STATE}/osd-lines")' for an unreadable volume"
+
+run_case "osd outside microemu" game "sleep 0.6" "up;sleep 0.05;up-release"
+expect_calls 0
+[[ -z "$(osd_lines)" ]] || fail "osd written outside microemu: $(cat "${STATE}/osd-lines")"
+
+VOLUME_STEP=1 GET_SLEEP=0.4 WPCTL_SLEEP=0.1 run_case "osd shows the latest read" microemu "sleep 1.6" "up;up-release;sleep 0.15;up;up-release;sleep 0.15;up;up-release"
+[[ ! -e "${STATE}/get-overlap" ]] || fail "two get-volume reads at once"
+sets=$(grep -c '^wpctl set-volume' "${STATE}/calls")
+[[ "$(osd_lines | tail -n 1)" == "${sets}0" ]] || fail "last osd line '$(tail -n 1 "${STATE}/osd-lines")', expected ${sets}0 after ${sets} sets: $(tr '\n' ' ' < "${STATE}/osd-lines")"
+
+exec {osd_fd}<&-
+run_case "osd fifo without a reader" microemu "sleep 1.0" "up;up-release;sleep 0.4;up;up-release"
+expect_call_count "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+" 2
+expect_call_count "${get}" 2
+[[ "${rc}" == 1 ]] || fail "exit ${rc}, expected 1 at the end of the key stream"
+rm -f "${osd}"
+
+echo keep > "${osd}"
+run_case "osd path is a regular file" microemu "sleep 1.0" "up;up-release;sleep 0.4;up;up-release"
+expect_call_count "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+" 2
+expect_call_count "${get}" 0
+[[ "$(cat "${osd}")" == keep ]] || fail "regular file at the osd path written: $(cat "${osd}")"
+rm -f "${osd}"
 
 rm -f "${T}/dev/event2"
 run_case "volume device missing" microemu "press;sleep 0.4;release"

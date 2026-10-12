@@ -30,6 +30,7 @@ esde=$(bash build/esde.sh build/cache/es-de "${dist}")
 retroarch=$(bash build/retroarch.sh build/cache/retroarch "${dist}")
 shaders=$(bash build/shaders.sh build/cache/shaders "${dist}" build/shaders-audit)
 theme=$(bash build/theme.sh build/cache/theme "${dist}")
+osd=$(bash build/osd.sh build/cache/osd "${dist}")
 stub=$(bash build/stub.sh build/cache/stub "${dist}" android/restrictions-stub)
 
 echo "${version}" > "${share}/version"
@@ -44,6 +45,7 @@ printf '%s\n' "${paths}" /usr/share/microemu/paths /usr/share/microemu/build-man
     echo "${retroarch}"
     echo "${shaders}"
     echo "${theme}"
+    echo "${osd}"
     echo "${stub}"
     echo
     rpm -qa | sort
