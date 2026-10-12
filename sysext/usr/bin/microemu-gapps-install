@@ -1,0 +1,168 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
+CACHE="${MICROEMU_GAPPS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/gapps}"
+ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
+UPDATE="${MICROEMU_PLAY_UPDATE:-/usr/bin/microemu-play-update}"
+SET=mtg11-20230922.vending-36.6.25
+
+MTG11_URL=https://github.com/MindTheGapps/11.0.0-arm64/releases/download/MindTheGapps-11.0.0-arm64-20230922_081122/MindTheGapps-11.0.0-arm64-20230922_081122.zip
+MTG11_SIZE=194494611
+MTG11_SHA=a34e054b952b8d5117e5c011b807ef25be1f02d71f0d1ce11db42e89da2962ce
+MTG14_URL=https://github.com/MindTheGapps/14.0.0-arm64/releases/download/MindTheGapps-14.0.0-arm64-20250203_200051/MindTheGapps-14.0.0-arm64-20250203_200051.zip
+MTG14_SIZE=431524182
+MTG14_SHA=6e1c3616862ce5b33e2b96074f86ae846eb1351a26a980e1ed140f8a7e7a4fd6
+DONOR=system/product/etc/permissions/privapp-permissions-google-product.xml
+DONOR_SHA=af730bf23ca2408fd642d64b5ca8a846b1d31c9a348368e6df26e91905b7bc11
+MERGED=system/product/etc/permissions/privapp-permissions-google-p.xml
+MERGED_SOURCE_SHA=1d06370c2d94d519907b87c13e42789131e9a0a811a8b53fe60439062238d541
+
+FILES="
+11 system/system_ext/priv-app/GoogleServicesFramework/GoogleServicesFramework.apk 482798ab45ae314ae8084ee15295d0acb7da4ea9cdc3c2701a75ab2dbc10f252
+11 system/product/priv-app/PrebuiltGmsCore/PrebuiltGmsCore.apk 0b4e47b1e53d8d035fda2f5d8369f67de6f9985ed49001c207aac329d563b56f
+14 system/product/priv-app/Phonesky/Phonesky.apk a11f673c924a5900672793ec631408d0a8b0f50191cc22208da6bd5202e8bdf1
+merged system/product/etc/permissions/privapp-permissions-google-p.xml fb059266e9b1f96688eeb2ea48a9075e01757fd76921d0087226976154015d33
+11 system/system_ext/etc/permissions/privapp-permissions-google-se.xml 4e2161961b9750773d4b9239ec1b4c5197c8131f6f51a18496aef72389dbbd8c
+11 system/product/etc/sysconfig/google.xml 95616cfe00726b60759be00a6491e2b5186da02bb0e384e6682bef61428d2709
+11 system/product/etc/sysconfig/google_build.xml 724875dc95f7fb7eb950714f9a474a9a304e081626d9364647e02409e4bdae9c
+11 system/product/etc/sysconfig/google-hiddenapi-package-whitelist.xml 8be877d7f55f1ef7a650290e99f6bbeeab25ae2573c4604280c7f2b6d286d516
+"
+
+if [[ "${MICROEMU_TEST:-}" == 1 ]]; then
+    MTG11_SIZE="${MICROEMU_GAPPS_MTG11_SIZE:-${MTG11_SIZE}}"
+    MTG11_SHA="${MICROEMU_GAPPS_MTG11_SHA:-${MTG11_SHA}}"
+    MTG14_SIZE="${MICROEMU_GAPPS_MTG14_SIZE:-${MTG14_SIZE}}"
+    MTG14_SHA="${MICROEMU_GAPPS_MTG14_SHA:-${MTG14_SHA}}"
+    DONOR_SHA="${MICROEMU_GAPPS_DONOR_SHA:-${DONOR_SHA}}"
+    MERGED_SOURCE_SHA="${MICROEMU_GAPPS_MERGED_SOURCE_SHA:-${MERGED_SOURCE_SHA}}"
+    FILES="${MICROEMU_GAPPS_FILES:-${FILES}}"
+fi
+
+say() { printf 'microemu-gapps-install: %s\n' "$*"; }
+
+fail() {
+    printf 'microemu-gapps-install: %s\n' "$*" >&2
+    exit 1
+}
+
+remove_tree() {
+    [[ -e "$1" || -L "$1" ]] || return 0
+    chmod -R u+w "$1" 2>/dev/null
+    rm -rf "$1"
+}
+
+complete() {
+    local stamp="${GAPPS}/${SET}/STAMP" source path sha
+    [[ -f "${stamp}" ]] || return 1
+    [[ "$(head -n 1 "${stamp}")" == "set=${SET}" ]] || return 1
+    while read -r source path sha; do
+        [[ -n "${path}" ]] || continue
+        grep -qx "${sha} [0-9]* ${path}" "${stamp}" || return 1
+        [[ -f "${GAPPS}/${SET}/${path}" ]] || return 1
+    done <<< "${FILES}"
+}
+
+fetch() {
+    local url=$1 size=$2 sha=$3 file=$4
+    if [[ "$(stat -c %s "${file}" 2>/dev/null)" == "${size}" ]] && echo "${sha}  ${file}" | sha256sum -c --status 2>/dev/null; then
+        return 0
+    fi
+    say "downloading ${url##*/}"
+    curl --proto =https --proto-redir =https -fL --retry 3 --connect-timeout 30 -o "${file}.part" "${url}" \
+        || { rm -f "${file}.part"; fail "download failed: ${url}"; }
+    [[ "$(stat -c %s "${file}.part")" == "${size}" ]] || { rm -f "${file}.part"; fail "${url##*/}: size differs from ${size}"; }
+    echo "${sha}  ${file}.part" | sha256sum -c --status || { rm -f "${file}.part"; fail "${url##*/}: sha256 mismatch"; }
+    mv "${file}.part" "${file}"
+}
+
+member() {
+    local zip=$1 path=$2 out=$3 sha=$4
+    mkdir -p "$(dirname "${out}")"
+    unzip -p "${zip}" "${path}" > "${out}" 2>/dev/null || fail "${path} missing in ${zip##*/}"
+    [[ "$(sha256sum "${out}" | cut -d' ' -f1)" == "${sha}" ]] || fail "${path} from ${zip##*/}: sha256 mismatch"
+}
+
+merge() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import re
+import sys
+
+base, donor, out = sys.argv[1:4]
+block = re.compile(r'[ \t]*<privapp-permissions package="com\.android\.vending">.*?</privapp-permissions>[ \t]*\n', re.S)
+base_text = open(base).read()
+donor_text = open(donor).read()
+base_blocks, donor_blocks = block.findall(base_text), block.findall(donor_text)
+if len(base_blocks) != 1 or len(donor_blocks) != 1:
+    sys.exit("expected one vending block in each file, found %d and %d" % (len(base_blocks), len(donor_blocks)))
+open(out, "w").write(base_text.replace(base_blocks[0], donor_blocks[0]))
+PY
+}
+
+for unit in microemu-play.service microemu-play-update.service; do
+    case "$(systemctl --user show -P ActiveState "${unit}" 2>/dev/null)" in
+        inactive|failed|"") ;;
+        *) fail "${unit} is running, refusing" ;;
+    esac
+done
+for container in lepton-microemu-play lepton-headless-microemu-play; do
+    rc=0
+    podman container exists "${container}" 2>/dev/null || rc=$?
+    case "${rc}" in
+        1) ;;
+        0) fail "container ${container} exists, refusing" ;;
+        *) fail "podman container exists failed (rc=${rc}), refusing" ;;
+    esac
+done
+
+mkdir -p "${GAPPS}" "${CACHE}"
+if complete; then
+    say "${SET} already installed"
+else
+    remove_tree "${GAPPS}/${SET}.tmp"
+    remove_tree "${GAPPS}/${SET}"
+    fetch "${MTG11_URL}" "${MTG11_SIZE}" "${MTG11_SHA}" "${CACHE}/${MTG11_URL##*/}"
+    fetch "${MTG14_URL}" "${MTG14_SIZE}" "${MTG14_SHA}" "${CACHE}/${MTG14_URL##*/}"
+    tmp="${GAPPS}/${SET}.tmp"
+    mkdir -p "${tmp}"
+    while read -r source path sha; do
+        [[ -n "${path}" ]] || continue
+        case "${source}" in
+            11) member "${CACHE}/${MTG11_URL##*/}" "${path}" "${tmp}/${path}" "${sha}" ;;
+            14) member "${CACHE}/${MTG14_URL##*/}" "${path}" "${tmp}/${path}" "${sha}" ;;
+            merged)
+                member "${CACHE}/${MTG11_URL##*/}" "${MERGED}" "${tmp}/.base.xml" "${MERGED_SOURCE_SHA}"
+                member "${CACHE}/${MTG14_URL##*/}" "${DONOR}" "${tmp}/.donor.xml" "${DONOR_SHA}"
+                mkdir -p "$(dirname "${tmp}/${path}")"
+                merge "${tmp}/.base.xml" "${tmp}/.donor.xml" "${tmp}/${path}" || fail "cannot merge ${path}"
+                rm -f "${tmp}/.base.xml" "${tmp}/.donor.xml"
+                [[ "$(sha256sum "${tmp}/${path}" | cut -d' ' -f1)" == "${sha}" ]] || fail "merged ${path}: sha256 mismatch"
+                ;;
+            *) fail "unknown source ${source} for ${path}" ;;
+        esac
+    done <<< "${FILES}"
+    {
+        echo "set=${SET}"
+        while read -r source path sha; do
+            [[ -n "${path}" ]] || continue
+            echo "${sha} $(stat -c %s "${tmp}/${path}") ${path}"
+        done <<< "${FILES}"
+    } > "${tmp}/STAMP.new"
+    mv "${tmp}/STAMP.new" "${tmp}/STAMP"
+    chmod -R a-w "${tmp}"
+    mv -T "${tmp}" "${GAPPS}/${SET}"
+    rm -f "${CACHE}/${MTG11_URL##*/}" "${CACHE}/${MTG14_URL##*/}"
+    say "${SET} installed in ${GAPPS}/${SET}"
+fi
+
+ln -sfn "${SET}" "${GAPPS}/current.new"
+mv -T "${GAPPS}/current.new" "${GAPPS}/current"
+mkdir -p "${ROMS}"
+[[ -f "${ROMS}/Google Play.play" ]] || printf 'com.android.vending\n' > "${ROMS}/Google Play.play"
+if [[ ! -e "${GAPPS}/update-entry" ]]; then
+    [[ -f "${ROMS}/Update Google Play.update" ]] || : > "${ROMS}/Update Google Play.update"
+    : > "${GAPPS}/update-entry"
+fi
+say "Google Play is on, updating Play and Play services before sign in (up to 20 min)"
+"${UPDATE}" --setup || fail "Play services not updated, run microemu-gapps-install again"
+say "launch Google Play from ES-DE's Android Games, then register the GSF ID shown in the journal"

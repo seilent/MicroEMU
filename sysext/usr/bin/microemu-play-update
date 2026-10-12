@@ -1,0 +1,430 @@
+#!/usr/bin/bash
+set -u
+
+UNIT=microemu-play-update.service
+CONTAINER=lepton-headless-microemu-play
+PLAY_RUN="${MICROEMU_PLAY_RUN:-/usr/libexec/microemu/microemu-play-run}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
+GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
+PACKAGES="${CONTEXT}/baked/data_overlay/system/packages.xml"
+CLEAR="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/play-update-clear"
+SETUP="${CLEAR%/*}/play-update-setup"
+DUMP="${CLEAR%/*}/play-update-dumpsys"
+BOOT="${CLEAR%/*}/play-update-boot"
+HEADLESS="${CLEAR%/*}/headless"
+GAMESCOPE="${MICROEMU_GAMESCOPE:-/usr/bin/gamescope}"
+DISPLAY_FILE="${MICROEMU_DISPLAY_FILE:-/usr/share/microemu/android/display}"
+DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+READY_S="${MICROEMU_HEADLESS_WAIT_S:-10}"
+BOUND_S="${MICROEMU_PLAY_UPDATE_BOUND_S:-1200}"
+POLL_S="${MICROEMU_PLAY_UPDATE_POLL_S:-10}"
+REPORT_S="${MICROEMU_PLAY_UPDATE_REPORT_S:-60}"
+SETTLE_S="${MICROEMU_PLAY_UPDATE_SETTLE_S:-30}"
+QUIET_S="${MICROEMU_PLAY_UPDATE_QUIET_S:-780}"
+COMPILE_S="${MICROEMU_PLAY_COMPILE_S:-600}"
+COMPILED="${CONTEXT}/microemu-compiled"
+LIST="${CLEAR%/*}/play-update-packages"
+GMS_TREE=204516046
+VENDING_TREE=83662520
+
+say() {
+    logger -t microemu-play-update -- "$*" 2>/dev/null || true
+    printf 'microemu-play-update: %s\n' "$*" >&2
+}
+
+log() { printf 'microemu-play-update: %s\n' "$*" >&2; }
+
+package_versions() {
+    python3 - "${PACKAGES}" "$@" <<'PY' 2>/dev/null
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except (OSError, ET.ParseError):
+    sys.exit(1)
+found = {node.get("name"): node.get("version", "0") for node in root.findall("package")}
+for name in sys.argv[2:]:
+    if name in found:
+        print(name, found[name])
+PY
+}
+
+versions() {
+    local out name version gms=0 vending=0
+    out=$(package_versions com.google.android.gms com.android.vending) || return 1
+    while read -r name version; do
+        [[ "${version}" =~ ^[0-9]+$ ]] || version=0
+        case "${name}" in
+            com.google.android.gms) gms=${version} ;;
+            com.android.vending) vending=${version} ;;
+        esac
+    done <<<"${out}"
+    printf '%s %s\n' "${gms}" "${vending}"
+}
+
+guest_job() {
+    local pid rc=0
+    timeout "$1" podman exec "${CONTAINER}" "${@:2}" > "${LIST}" 2>/dev/null &
+    pid=$!
+    wait "${pid}" || rc=$?
+    if (( stopping )); then
+        kill "${pid}" 2>/dev/null
+        return 255
+    fi
+    return "${rc}"
+}
+
+read_dex2oat() {
+    local rc=0
+    guest_job 10 /system/bin/pidof dex2oat64 dex2oat32 dex2oat || rc=$?
+    dex2oat=1
+    (( rc == 1 )) && dex2oat=0
+    return 0
+}
+
+compile_changed() {
+    local start=$(( ${EPOCHREALTIME/./} / 1000 )) rc pkg version line done_list='' count=0 total
+    local -a targets changed
+    rc=0
+    guest_job 30 /system/bin/cmd_real package list packages -3 || rc=$?
+    (( rc == 255 )) && compile_interrupted
+    (( rc == 0 )) || { log "compile skipped: cannot list the installed apps"; return 0; }
+    mapfile -t targets < <(sed -n 's/^package:\([A-Za-z0-9._]*\)$/\1/p' "${LIST}")
+    targets+=(com.google.android.gms com.google.android.gsf com.android.vending)
+    touch "${COMPILED}"
+    mapfile -t changed < <(package_versions "${targets[@]}" | grep -vxF -f "${COMPILED}")
+    total=${#changed[@]}
+    if (( total == 0 )); then
+        log "compile: no app changed"
+        return 0
+    fi
+    log "compile: ${total} apps changed, compiling with speed, at most $(( COMPILE_S / 60 )) min"
+    for line in "${changed[@]}"; do
+        read -r pkg version <<<"${line}"
+        rc=0
+        guest_job $(( COMPILE_S - (${EPOCHREALTIME/./} / 1000 - start) / 1000 + 1 )) /system/bin/cmd_real package compile -m speed "${pkg}" || rc=$?
+        (( rc == 255 )) && compile_interrupted
+        if (( ${EPOCHREALTIME/./} / 1000 - start >= COMPILE_S * 1000 )); then
+            log "compile stopped after $(( COMPILE_S / 60 )) min at ${pkg}, ${count} of ${total} done, the next update run goes on"
+            break
+        fi
+        if (( rc == 0 )) && grep -q Success "${LIST}"; then
+            done_list+="${pkg} ${version}"$'\n'
+            count=$((count + 1))
+        else
+            log "compile ${pkg} failed"
+        fi
+    done
+    if [[ -n "${done_list}" ]]; then
+        {
+            awk 'NR == FNR { done[$1] = 1; next } !($1 in done)' <(printf '%s' "${done_list}") "${COMPILED}"
+            printf '%s' "${done_list}"
+        } > "${COMPILED}.new"
+        mv "${COMPILED}.new" "${COMPILED}"
+    fi
+    (( count == total )) && log "compile: ${count} apps done"
+    return 0
+}
+
+compile_interrupted() {
+    log "stop requested during the compile, the update is kept"
+    timeout 3 podman exec "${CONTAINER}" /system/bin/sync >/dev/null 2>&1
+    stop_container 1
+    exit 0
+}
+
+done_finish() {
+    compile_changed
+    finish "$1"
+}
+
+finish() {
+    log "$1"
+    timeout 10 podman exec "${CONTAINER}" /system/bin/sync >/dev/null 2>&1
+    stop_container 5
+    exit 0
+}
+
+maintenance_finish() {
+    if (( session_seen && seen_gms == start_gms )); then
+        finish "GMS install session ended without an update (GMS ${seen_gms}), Play backs off; microemu-play-update --clear-play schedules it at once"
+    fi
+    if (( $2 )); then
+        done_finish "$1"
+    fi
+    finish "$1"
+}
+
+guest_booted() {
+    local pid
+    timeout 10 podman exec "${CONTAINER}" /system/bin/getprop sys.boot_completed > "${BOOT}" 2>/dev/null &
+    pid=$!
+    wait "${pid}"
+    if (( stopping )); then
+        kill "${pid}" 2>/dev/null
+        return 1
+    fi
+    [[ "$(cat "${BOOT}" 2>/dev/null)" == 1 ]]
+}
+
+read_sessions() {
+    local pid
+    sessions=unknown
+    gms_session=0
+    timeout 10 podman exec "${CONTAINER}" /system/bin/dumpsys package installs > "${DUMP}" 2>/dev/null &
+    pid=$!
+    wait "${pid}"
+    if (( stopping )); then
+        kill "${pid}" 2>/dev/null
+        return 0
+    fi
+    grep -q "Active install sessions:" "${DUMP}" || return 0
+    read -r sessions gms_session < <(awk '/^ *Active install sessions:/ { on = 1; next }
+        /^ *(Finalized|Historical) install sessions:/ { on = 0 }
+        on && /^[[:space:]]*Session -?[0-9]+:[[:space:]]*$/ { n++ }
+        on && /(^|[[:space:]])appPackageName=com\.google\.android\.gms([[:space:]]|$)/ { g = 1 }
+        END { print n + 0, g + 0 }' "${DUMP}")
+}
+
+stop_container() {
+    if podman container exists "${CONTAINER}" 2>/dev/null; then
+        podman stop -t "$1" "${CONTAINER}" >/dev/null 2>&1
+    else
+        pkill -TERM -P "${run_pid}" 2>/dev/null
+        kill -TERM "${run_pid}" 2>/dev/null
+    fi
+    wait "${run_pid}" 2>/dev/null
+}
+
+display_value() {
+    sed -n "s/^$1=//p" "${DISPLAY_FILE}" 2>/dev/null | head -n 1
+}
+
+start_gamescope() {
+    local width height wayland i
+    width=$(display_value width)
+    height=$(display_value height)
+    [[ "${width}" =~ ^[0-9]+$ && "${height}" =~ ^[0-9]+$ ]] || { log "no width and height in ${DISPLAY_FILE}"; return 1; }
+    [[ -n "${XDG_RUNTIME_DIR:-}" && "${HEADLESS}" == "${XDG_RUNTIME_DIR}/"* ]] || { log "${HEADLESS} is not under XDG_RUNTIME_DIR"; return 1; }
+    rm -rf "${HEADLESS}"
+    mkdir -p "${HEADLESS%/*}" "${DATA}"
+    mkdir -m 0700 "${HEADLESS}" || { log "cannot create ${HEADLESS}"; return 1; }
+    mkfifo "${HEADLESS}/ready"
+    exec {ready_fd}<> "${HEADLESS}/ready"
+    XDG_RUNTIME_DIR="${HEADLESS}" "${GAMESCOPE}" --backend headless -W "${width}" -H "${height}" \
+        --expose-wayland -R "${HEADLESS}/ready" -- sleep infinity > "${DATA}/headless-gamescope.log" 2>&1 &
+    gamescope_pid=$!
+    for ((i = 0; i < READY_S * 5; i++)); do
+        (( stopping )) && return 2
+        kill -0 "${gamescope_pid}" 2>/dev/null || break
+        if read -r -t 0.2 -u "${ready_fd}" _ wayland; then
+            [[ "${wayland}" =~ ^[A-Za-z0-9._-]+$ && -S "${HEADLESS}/${wayland}" ]] || break
+            headless_display="${HEADLESS#"${XDG_RUNTIME_DIR}/"}/${wayland}"
+            log "headless gamescope on ${headless_display}"
+            return 0
+        fi
+    done
+    (( stopping )) && return 2
+    log "headless gamescope did not start, see ${DATA}/headless-gamescope.log"
+    return 1
+}
+
+stop_gamescope() {
+    if [[ -n "${gamescope_pid}" ]]; then
+        kill -TERM "${gamescope_pid}" 2>/dev/null
+        wait "${gamescope_pid}" 2>/dev/null
+        gamescope_pid=
+    fi
+    [[ -z "${ready_fd}" ]] || exec {ready_fd}>&-
+    ready_fd=
+    rm -rf "${HEADLESS}"
+}
+
+interrupted() {
+    log "stop requested, update interrupted (GMS ${seen_gms}, Play ${seen_vending})"
+    [[ -z "${run_pid}" ]] || stop_container 1
+    exit 2
+}
+
+body() {
+    local start=$(( ${EPOCHREALTIME/./} / 1000 )) gms=0 vending=0 seen_gms=0 seen_vending=0 next_report now sleep_pid clear=0 setup=0 changed='' active=0 sessions busy_at=0 session_seen=0 gms_session=0 start_gms booted=0 boot_at=0 rc dex2oat=0 dex_logged=0
+    stopping=0
+    run_pid=
+    gamescope_pid=
+    ready_fd=
+    headless_display=
+    [[ -e "${CLEAR}" ]] && clear=1
+    [[ -e "${SETUP}" ]] && setup=1
+    rm -f "${CLEAR}" "${SETUP}"
+    trap 'stopping=1' TERM INT
+    trap 'rm -f "${DUMP}" "${BOOT}" "${LIST}"; stop_gamescope' EXIT
+    case "$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)" in
+        inactive|failed|"") ;;
+        *) log "microemu-play.service is running, refusing"; exit 1 ;;
+    esac
+    if read -r gms vending < <(versions); then
+        seen_gms=${gms}
+        seen_vending=${vending}
+    fi
+    (( seen_gms > GMS_TREE && seen_vending > VENDING_TREE )) || setup=1
+    start_gms=${seen_gms}
+    mkdir -p "${DUMP%/*}"
+    if (( setup )); then
+        log "starting android headless, waiting for GMS above ${GMS_TREE} and Play above ${VENDING_TREE}, at most $(( BOUND_S / 60 )) min"
+    else
+        log "starting android headless (GMS ${seen_gms}, Play ${seen_vending}), done ${SETTLE_S} s after the last change with no install session, or after $(( QUIET_S / 60 )) min without one"
+    fi
+    rc=0
+    start_gamescope || rc=$?
+    (( rc == 2 )) && interrupted
+    (( rc == 0 )) || exit 1
+    GAMESCOPE_WAYLAND_DISPLAY="${headless_display}" "${PLAY_RUN}" --headless &
+    run_pid=$!
+    (( stopping )) && interrupted
+    next_report=$(( start + REPORT_S * 1000 ))
+    while :; do
+        (( stopping )) && interrupted
+        if ! kill -0 "${run_pid}" 2>/dev/null; then
+            (( stopping )) && interrupted
+            wait "${run_pid}"
+            (( stopping )) && interrupted
+            log "android exited before the update (GMS ${seen_gms}, Play ${seen_vending})"
+            exit 1
+        fi
+        now=$(( ${EPOCHREALTIME/./} / 1000 ))
+        if (( ! booted )) && guest_booted; then
+            booted=1
+            boot_at=${now}
+            log "android booted"
+        fi
+        (( stopping )) && interrupted
+        if (( booted )) && read -r gms vending < <(versions); then
+            if (( seen_gms && gms != seen_gms )); then
+                log "GMS ${seen_gms} to ${gms}"
+                changed=${now}
+            fi
+            if (( seen_vending && vending != seen_vending )); then
+                log "Play ${seen_vending} to ${vending}"
+                changed=${now}
+            fi
+            seen_gms=${gms}
+            seen_vending=${vending}
+        fi
+        if (( booted && ! setup )); then
+            read_sessions
+            (( stopping )) && continue
+            if [[ "${sessions}" != 0 ]]; then
+                (( active )) || log "install session active (${sessions})"
+                active=1
+                (( gms_session )) && session_seen=1
+                busy_at=${now}
+            elif (( active )); then
+                log "no install session"
+                active=0
+            fi
+        fi
+        if (( booted )); then
+            read_dex2oat
+            (( stopping )) && continue
+            if (( dex2oat )); then
+                (( dex_logged )) || log "dex2oat running"
+                dex_logged=1
+                busy_at=${now}
+            else
+                dex_logged=0
+            fi
+        fi
+        if (( booted && clear )); then
+            clear=0
+            if timeout 10 podman exec "${CONTAINER}" /system/bin/pm clear com.android.vending >/dev/null 2>&1; then
+                log "cleared Play's data, Play schedules its updates now"
+            else
+                log "pm clear com.android.vending failed"
+            fi
+        fi
+        if (( setup && ! dex2oat )) && (( seen_gms > GMS_TREE && seen_vending > VENDING_TREE )); then
+            done_finish "done in $(( (now - start) / 60000 )) min $(( (now - start) / 1000 % 60 )) s: GMS ${seen_gms}, Play ${seen_vending}"
+        fi
+        if (( ! setup && ! active && ! dex2oat )) && [[ -n "${changed}" ]] && (( now - (changed > busy_at ? changed : busy_at) >= SETTLE_S * 1000 )); then
+            maintenance_finish "done in $(( (now - start) / 60000 )) min $(( (now - start) / 1000 % 60 )) s: GMS ${seen_gms}, Play ${seen_vending}" 1
+        fi
+        if (( booted && ! setup && ! active && ! dex2oat )) && [[ -z "${changed}" ]] && (( now - boot_at >= QUIET_S * 1000 )); then
+            maintenance_finish "already current after $(( QUIET_S / 60 )) min: GMS ${seen_gms}, Play ${seen_vending}" 1
+        fi
+        if (( now - start >= BOUND_S * 1000 )); then
+            if (( ! setup && active )); then
+                finish "stopped after $(( BOUND_S / 60 )) min with an install session active, run microemu-play-update again"
+            elif (( ! setup )); then
+                maintenance_finish "stopped after $(( BOUND_S / 60 )) min: GMS ${seen_gms}, Play ${seen_vending}" 0
+            fi
+            log "play services update not done after $(( BOUND_S / 60 )) min (GMS ${seen_gms}, Play ${seen_vending})"
+            (( seen_gms > GMS_TREE )) || log "GMS unchanged: microemu-play-update --clear-play makes Play schedule it at once, and resets Play's own settings"
+            stop_container 5
+            exit 1
+        fi
+        if (( now >= next_report )); then
+            log "waiting, $(( (now - start) / 60000 )) min (GMS ${seen_gms}, Play ${seen_vending})"
+            next_report=$(( now + REPORT_S * 1000 ))
+        fi
+        sleep "${POLL_S}" &
+        sleep_pid=$!
+        wait "${sleep_pid}"
+        kill "${sleep_pid}" 2>/dev/null
+    done
+}
+
+no_block=0
+clear_play=0
+setup_run=0
+[[ "${1:-}" == --body ]] && body
+for arg in "$@"; do
+    case "${arg}" in
+        --no-block) no_block=1 ;;
+        --clear-play) clear_play=1 ;;
+        --setup) setup_run=1 ;;
+        *) echo "usage: microemu-play-update [--no-block] [--clear-play] [--setup]" >&2; exit 1 ;;
+    esac
+done
+
+case "$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)" in
+    inactive|failed|"") ;;
+    *) say "microemu-play.service is running, refusing"; exit 1 ;;
+esac
+rc=0
+podman container exists lepton-microemu-play 2>/dev/null || rc=$?
+case "${rc}" in
+    1) ;;
+    0) say "container lepton-microemu-play exists, refusing"; exit 1 ;;
+    *) say "podman container exists failed (rc=${rc}), refusing"; exit 1 ;;
+esac
+[[ -e "${GAPPS}/current" ]] || { say "the Google Play layer is off, run microemu-gapps-install"; exit 1; }
+case "$(systemctl --user show -P ActiveState "${UNIT}" 2>/dev/null)" in
+    active|activating) say "${UNIT} already running"; exit 1 ;;
+esac
+mkdir -p "${CLEAR%/*}"
+(( clear_play )) && : > "${CLEAR}"
+(( setup_run )) && : > "${SETUP}"
+
+if (( no_block )); then
+    systemctl --user start --no-block "${UNIT}" || { rm -f "${CLEAR}" "${SETUP}"; say "cannot start ${UNIT}"; exit 1; }
+    say "update started in the background, see journalctl --user -u ${UNIT}"
+    exit 0
+fi
+journalctl --user -f -n 0 -o cat -u "${UNIT}" -t microemu-play-update >&2 &
+follow_pid=$!
+rc=0
+systemctl --user start "${UNIT}" || rc=$?
+rm -f "${CLEAR}" "${SETUP}"
+sleep 1
+kill "${follow_pid}" 2>/dev/null
+wait "${follow_pid}" 2>/dev/null
+result=$(systemctl --user show -P Result "${UNIT}" 2>/dev/null)
+if (( rc != 0 )) && [[ -z "${result}" || "${result}" == success ]]; then
+    result=stopped
+fi
+if (( rc != 0 )) || [[ -n "${result}" && "${result}" != success ]]; then
+    say "update not done (result ${result:-unknown}), see journalctl --user -u ${UNIT}"
+    exit 1
+fi
+exit 0

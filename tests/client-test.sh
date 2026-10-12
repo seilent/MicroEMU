@@ -17,6 +17,9 @@ mkdir -p "${MICROEMU_THEMES_DIR}/art-book-next-es-de"
 export MICROEMU_ESDE_APPDATA_DIR="${T}/home/.local/share/microemu/ES-DE"
 : > "${MICROEMU_SYSTEMS_FILE}"
 custom="${MICROEMU_ESDE_APPDATA_DIR}/custom_systems"
+export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
+export MICROEMU_CLIENT_POLL_S=0.05
+reload_marker="${MICROEMU_RUNTIME_DIR}/esde-reload"
 
 cat > "${T}/es-de.stub" <<'STUB'
 #!/usr/bin/bash
@@ -25,6 +28,17 @@ printf '%s\n' "${ESDE_APPDATA_DIR:-unset}" > "${STATE}/appdata"
 readlink "${ESDE_APPDATA_DIR}/custom_systems/es_systems.xml" > "${STATE}/link-at-start" 2>/dev/null || true
 readlink "${ESDE_APPDATA_DIR}/themes/art-book-next-es-de" > "${STATE}/theme-at-start" 2>/dev/null || true
 cp "${ESDE_APPDATA_DIR}/settings/es_settings.xml" "${STATE}/settings-at-start" 2>/dev/null || true
+n=$(( $(cat "${STATE}/esde_runs" 2>/dev/null || echo 0) + 1 ))
+echo "${n}" > "${STATE}/esde_runs"
+cp "${ESDE_APPDATA_DIR}/settings/es_settings.xml" "${STATE}/settings-at-start-${n}" 2>/dev/null || true
+[[ ! -e "${STATE}/pick-${n}" ]] || sed -i "s/value=\"androidgames\"/value=\"$(cat "${STATE}/pick-${n}")\"/" "${ESDE_APPDATA_DIR}/settings/es_settings.xml"
+if [[ "$(cat "${STATE}/reload-on-run" 2>/dev/null)" == "${n}" ]]; then
+    trap 'echo "es-de term scope=$([[ -e "${STATE}/scope" ]] && echo active || echo inactive)" >> "${STATE}/calls"; exit 0' TERM
+    mkdir -p "${MICROEMU_RUNTIME_DIR}"
+    : > "${MICROEMU_RUNTIME_DIR}/esde-reload"
+    for _ in $(seq 1 100); do /usr/bin/sleep 0.05; done
+    echo "es-de not terminated" >> "${STATE}/calls"
+fi
 exit "$(cat "${STATE}/esde_rc")"
 STUB
 cat > "${T}/bin/systemctl" <<'STUB'
@@ -33,6 +47,7 @@ echo "systemctl $*" >> "${STATE}/calls"
 case "$*" in
     "--user show -p ActiveState --value gamescope-session-plus@microemu.service")
         cat "${STATE}/unit" ;;
+    "--user is-active --quiet microemu-game.scope") [[ -e "${STATE}/scope" ]] ;;
     "start armada-session-switch@gamemode.service")
         rc=$(head -n 1 "${STATE}/start_rc")
         tail -n +2 "${STATE}/start_rc" > "${STATE}/start_rc.next"
@@ -208,6 +223,65 @@ printf '%s\n' "${seeded}" | sed 's/dark-screenshots/oled-noir/; s/value="3:2"/va
 cp "${settings}" "${T}/full"
 run
 cmp -s "${settings}" "${T}/full" || fail "full settings changed: $(cat "${settings}")"
+
+startup_user='<?xml version="1.0"?>
+<string name="StartupSystem" value="snes" />
+<string name="Theme" value="art-book-next-es-de" />'
+saved="${MICROEMU_ESDE_APPDATA_DIR}/settings/microemu-startup.saved"
+
+reset active
+mkdir -p "$(dirname "${settings}")"
+printf '%s\n' "${startup_user}" > "${settings}"
+echo 1 > "${STATE}/reload-on-run"
+: > "${STATE}/scope"
+( /usr/bin/sleep 0.4; rm -f "${STATE}/scope" ) &
+run
+wait
+[[ "$(count "^es-de$")" == 2 ]] || fail "reload: es-de ran $(count "^es-de$") times: $(calls)"
+grep -qx "es-de term scope=inactive" "${STATE}/calls" || fail "reload: es-de not terminated after the game scope ended: $(calls)"
+grep -qx "new Android entries, restarting es-de" "${STATE}/log" || fail "reload: no log line"
+grep -qx '<string name="StartupSystem" value="androidgames" />' "${STATE}/settings-at-start-2" \
+    && grep -qx '<string name="StartupView" value="gamelist" />' "${STATE}/settings-at-start-2" || fail "reload: not started on the Android Games gamelist: $(cat "${STATE}/settings-at-start-2")"
+grep -q 'name="StartupSystem" value="snes"' "${STATE}/settings-at-start-2" && fail "reload: the old startup system kept"
+grep -qx '<string name="StartupSystem" value="snes" />' "${settings}" || fail "reload: startup system not restored: $(cat "${settings}")"
+grep -q 'StartupView\|androidgames' "${settings}" && fail "reload: override left: $(cat "${settings}")"
+[[ ! -e "${saved}" && ! -e "${reload_marker}" ]] || fail "reload: saved startup or marker left"
+[[ "$(count "^${switch}$")" == 1 ]] || fail "reload: switch called $(count "^${switch}$") times: $(calls)"
+[[ "$(grep -n '^es-de$' "${STATE}/calls" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n "${switch}" "${STATE}/calls" | cut -d: -f1)" ]] \
+    || fail "reload: switch before the second es-de"
+
+reset active
+mkdir -p "$(dirname "${settings}")"
+printf '%s\n' "${startup_user}" > "${settings}"
+echo 1 > "${STATE}/reload-on-run"
+echo gba > "${STATE}/pick-2"
+run
+grep -qx '<string name="StartupSystem" value="gba" />' "${settings}" || fail "reload: a startup system picked after the reload was overwritten: $(cat "${settings}")"
+[[ ! -e "${saved}" ]] || fail "reload with a new pick: saved startup left"
+
+reset deactivating
+echo 1 > "${STATE}/reload-on-run"
+run
+[[ "$(count "^es-de$")" == 1 ]] || fail "reload while deactivating: es-de ran $(count "^es-de$") times"
+[[ "$(tail -n 1 "${STATE}/calls")" == "sleep infinity" ]] || fail "reload while deactivating: $(calls)"
+[[ ! -e "${saved}" ]] || fail "reload while deactivating: saved startup left"
+
+reset deactivating
+mkdir -p "$(dirname "${settings}")"
+printf '<?xml version="1.0"?>\n<string name="StartupSystem" value="androidgames" />\n<string name="StartupView" value="gamelist" />\n' > "${settings}"
+printf '<string name="StartupSystem" value="snes" />\n' > "${saved}"
+run
+grep -qx '<string name="StartupSystem" value="snes" />' "${STATE}/settings-at-start-1" || fail "leftover override not restored before es-de: $(cat "${STATE}/settings-at-start-1")"
+grep -q StartupView "${STATE}/settings-at-start-1" && fail "leftover override: StartupView kept"
+[[ ! -e "${saved}" ]] || fail "leftover override: saved startup left"
+
+reset deactivating
+mkdir -p "${MICROEMU_RUNTIME_DIR}"
+: > "${reload_marker}"
+run
+[[ "$(count "^es-de$")" == 1 ]] || fail "stale marker: es-de ran $(count "^es-de$") times"
+[[ ! -e "${reload_marker}" ]] || fail "stale marker kept"
+grep -q "restarting es-de" "${STATE}/log" && fail "stale marker restarted es-de"
 
 if (( failures )); then
     echo "client-test: ${failures} failure(s)" >&2

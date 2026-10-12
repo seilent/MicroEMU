@@ -3,24 +3,44 @@ set -u
 
 CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
+ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
+
+gapps=0
+case "${1:-}" in
+    "") ;;
+    --gapps) gapps=1 ;;
+    *) echo "usage: microemu-play-reset [--gapps]" >&2; exit 1 ;;
+esac
 
 fail() { echo "microemu-play-reset: $*" >&2; exit 1; }
 
-case "$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)" in
-    inactive|failed|"") ;;
-    *) fail "microemu-play.service is running, refusing" ;;
-esac
-rc=0
-podman container exists lepton-microemu-play 2>/dev/null || rc=$?
-case "${rc}" in
-    1) ;;
-    0) fail "container lepton-microemu-play exists, refusing" ;;
-    *) fail "podman container exists failed (rc=${rc}), refusing" ;;
-esac
+for unit in microemu-play.service microemu-play-update.service; do
+    case "$(systemctl --user show -P ActiveState "${unit}" 2>/dev/null)" in
+        inactive|failed|"") ;;
+        *) fail "${unit} is running, refusing" ;;
+    esac
+done
+for container in lepton-microemu-play lepton-headless-microemu-play; do
+    rc=0
+    podman container exists "${container}" 2>/dev/null || rc=$?
+    case "${rc}" in
+        1) ;;
+        0) fail "container ${container} exists, refusing" ;;
+        *) fail "podman container exists failed (rc=${rc}), refusing" ;;
+    esac
+done
 
 if [[ -d "${CONTEXT}" ]]; then
     podman unshare chmod -R 700 "${CONTEXT}" || fail "cannot chmod ${CONTEXT}"
     podman unshare rm -rf "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
 fi
 rm -rf "${DATA}/sideload" "${DATA}/prune"
+if (( gapps )); then
+    if [[ -e "${GAPPS}" ]]; then
+        chmod -R u+w "${GAPPS}" && rm -rf "${GAPPS}" || fail "cannot remove ${GAPPS}"
+    fi
+    rm -f "${ROMS}/Google Play.play" "${ROMS}/Update Google Play.update"
+    echo "microemu-play-reset: the Google Play layer is removed"
+fi
 echo "microemu-play-reset: the next Android launch boots a fresh context and installs every .apk again"

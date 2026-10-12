@@ -216,6 +216,8 @@ rm -rf "${MICROEMU_GAME_STOP_HOOKS}"
 "${libexec}/microemu-game-stop"
 [[ "$(grep -c "microemu-game.scope" "${STATE}/calls")" == 3 ]] || fail "no hook directory: scope not stopped"
 
+grep -q "microemu-play-update" "${STATE}/calls" && fail "session stop touched the update unit: $(cat "${STATE}/calls")"
+
 if (( failures )); then
     echo "stop-test: ${failures} failure(s)" >&2
     exit 1

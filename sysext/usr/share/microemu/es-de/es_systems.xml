@@ -5,7 +5,7 @@
         <name>androidgames</name>
         <fullname>Android Games</fullname>
         <path>%ROMPATH%/androidgames</path>
-        <extension>.apk .APK</extension>
+        <extension>.apk .APK .play .PLAY .update .UPDATE</extension>
         <command label="Lepton">/usr/libexec/microemu/microemu-apk %ROM%</command>
         <platform>android</platform>
         <theme>androidgames</theme>

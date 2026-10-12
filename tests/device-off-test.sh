@@ -28,13 +28,13 @@ shift
 case "$*" in
     "systemctl --user show -p ActiveState --value gamescope-session-plus@microemu.service")
         cat "${STATE}/microemu" ;;
-    "systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service")
+    "systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service microemu-play-update.service")
         exit 5 ;;
     "systemctl --user daemon-reload")
         exit 0 ;;
     "systemctl --user stop microemu-hotkeyd.service")
         exit 5 ;;
-    "systemctl --user reset-failed microemu-hotkeyd.service")
+    "systemctl --user reset-failed microemu-hotkeyd.service microemu-play-update.service")
         exit 1 ;;
     *)
         echo "unexpected runuser command: $*" >&2; exit 99 ;;
@@ -114,19 +114,19 @@ removed() {
     [[ "$(count "^runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user daemon-reload$")" == 1 ]] \
         || fail "$1: no user daemon-reload as armada with XDG_RUNTIME_DIR: $(calls)"
     [[ "$(count "^systemctl restart polkit$")" == 1 ]] || fail "$1: no polkit restart: $(calls)"
-    [[ "$(count "systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service$")" == 1 ]] \
+    [[ "$(count "systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service microemu-play-update.service$")" == 1 ]] \
         || fail "$1: user units not stopped: $(calls)"
-    [[ "$(count "^runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service$")" == 1 ]] \
+    [[ "$(count "^runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service microemu-play-update.service$")" == 1 ]] \
         || fail "$1: user stop not run as armada with XDG_RUNTIME_DIR: $(calls)"
     order=$(grep -n -e 'systemctl --user stop' -e '^systemd-sysext refresh$' -e '^systemctl daemon-reload$' \
         -e 'systemctl --user daemon-reload$' -e 'systemctl --user reset-failed' -e '^systemctl restart polkit$' \
         "${STATE}/calls" | cut -d: -f2-)
-    expected="runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service
+    expected="runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service microemu-play-update.service
 systemd-sysext refresh
 systemctl daemon-reload
 runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user daemon-reload
 runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user stop microemu-hotkeyd.service
-runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user reset-failed microemu-hotkeyd.service
+runuser -u armada -- env XDG_RUNTIME_DIR=${MICROEMU_USER_RUNTIME_DIR} systemctl --user reset-failed microemu-hotkeyd.service microemu-play-update.service
 systemctl restart polkit"
     [[ "${order}" == "${expected}" ]] || fail "$1: order $(calls)"
 }
@@ -155,7 +155,7 @@ run
 [[ "$(count "^systemctl start --no-block armada-session-switch@gamemode.service$")" == 1 ]] \
     || fail "microemu active did not start the switch: $(calls)"
 [[ "$(count "^sleep 1$")" == 3 ]] || fail "microemu active waited $(count "^sleep") times, expected 3: $(calls)"
-[[ "$(grep -n 'armada-session-switch' "${STATE}/calls" | cut -d: -f1)" -lt "$(grep -n 'systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service' "${STATE}/calls" | cut -d: -f1)" ]] \
+[[ "$(grep -n 'armada-session-switch' "${STATE}/calls" | cut -d: -f1)" -lt "$(grep -n 'systemctl --user stop microemu-hotkeyd.service microemu-pad.service microemu-guard.service microemu-play-update.service' "${STATE}/calls" | cut -d: -f1)" ]] \
     || fail "microemu active stopped user units before the switch: $(calls)"
 removed "microemu active"
 [[ "$(count "unmerge")" == 0 ]] || fail "microemu active ran unmerge: $(calls)"

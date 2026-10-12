@@ -18,6 +18,8 @@ export MICROEMU_SIDELOAD="${T}/bin/sideload"
 export MICROEMU_APK_WATCH="${T}/bin/watch"
 export MICROEMU_PAD_NODES="${T}/bin/pad-nodes"
 export MICROEMU_PAD_FUZZ="${T}/bin/pad-fuzz"
+export MICROEMU_GAPPS="${T}/gapps"
+export MICROEMU_PLAY_UPDATE="${T}/bin/update"
 rom="${T}/roms/2048 (F-Droid).apk"
 : > "${rom}"
 
@@ -41,6 +43,7 @@ case "$*" in
         exit "$(cat "${STATE}/start_rc")" ;;
     "--user show -P Result microemu-play.service") cat "${STATE}/result" ;;
     "--user show -P ActiveState microemu-play.service") echo inactive ;;
+    "--user show -P ActiveState microemu-play-update.service") cat "${STATE}/update_state" 2>/dev/null ;;
     "--user stop --no-block microemu-play.service")
         sleep "$(cat "${STATE}/stop_sleep" 2>/dev/null || echo 0)"
         echo "stop done" >> "${STATE}/calls" ;;
@@ -53,12 +56,17 @@ cat > "${T}/bin/systemd-run" <<'STUB'
 echo "systemd-run" >> "${STATE}/calls"
 printf '%s\n' "$@" > "${STATE}/argv"
 STUB
+cat > "${T}/bin/update" <<'STUB'
+#!/usr/bin/bash
+echo "update $*" >> "${STATE}/calls"
+STUB
 cat > "${T}/bin/sideload" <<'STUB'
 #!/usr/bin/bash
 echo "sideload $1" >> "${STATE}/calls"
 case "$1" in
     prepare) [[ "$(cat "${STATE}/prepare_rc")" == 0 ]] || exit 1; echo com.uberspot.a2048 ;;
     install) exit "$(cat "${STATE}/install_rc")" ;;
+    installed) cat "${STATE}/installed" ;;
 esac
 STUB
 cat > "${T}/bin/watch" <<'STUB'
@@ -79,7 +87,11 @@ cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
 echo "podman $*" >> "${STATE}/calls"
 case "$*" in
+    "container exists lepton-headless-microemu-play") [[ -e "${STATE}/stray" ]] ;;
+    "rm -f lepton-headless-microemu-play") ;;
     *"resolve-activity --brief -c android.intent.category.LAUNCHER com.uberspot.a2048") cat "${STATE}/resolve" ;;
+    *"resolve-activity --brief -c android.intent.category.LAUNCHER com.android.vending") echo com.android.vending/.AssetBrowserActivity ;;
+    *"resolve-activity --brief -c android.intent.category.LAUNCHER com.example.playgame") echo com.example.playgame/.Main ;;
     *"am start -n "*) exit "$(cat "${STATE}/am_rc")" ;;
     "container inspect -f {{.State.Running}} lepton-microemu-play") cat "${STATE}/running" ;;
     *"/system/bin/date "*) [[ -e "${STATE}/dead" ]] && exit 125; echo "10-12 05:00:00.000" ;;
@@ -126,6 +138,7 @@ reset() {
     echo /dev/input/event10 > "${STATE}/nodes"
     printf 'priority=0 preferredOrder=0 match=0x108000\ncom.uberspot.a2048/.MainActivity\n' > "${STATE}/resolve"
     echo 0 > "${STATE}/am_rc"
+    : > "${STATE}/installed"
     echo true > "${STATE}/running"
     echo "  mResumedActivity: ActivityRecord{1 u0 com.android.launcher3/.Launcher t1}" > "${STATE}/dumpsys"
     : > "${STATE}/logcat"
@@ -208,7 +221,11 @@ ${apk}
 --body
 ${rom}"
 [[ "$(cat "${STATE}/argv")" == "${expected}" ]] || fail "${case_name}: argv $(cat "${STATE}/argv")"
-[[ "$(sed -n 2p "${STATE}/calls")" == "game-free" ]] || fail "${case_name}: scope not waited for before the run: $(calls)"
+[[ "$(sed -n 2p "${STATE}/calls")" == "systemctl --user stop microemu-play-update.service" ]] || fail "${case_name}: update not stopped before the run: $(calls)"
+[[ "$(sed -n 3p "${STATE}/calls")" == "systemctl --user reset-failed microemu-play-update.service" ]] || fail "${case_name}: interrupted update left failed: $(calls)"
+[[ "$(sed -n 4p "${STATE}/calls")" == "podman container exists lepton-headless-microemu-play" ]] || fail "${case_name}: no headless container check before the run: $(calls)"
+[[ "$(sed -n 5p "${STATE}/calls")" == "game-free" ]] || fail "${case_name}: scope not waited for before the run: $(calls)"
+count "podman rm -f lepton-headless-microemu-play" | grep -qx 0 || fail "${case_name}: removed a headless container that was not there"
 
 case_name="scope still stopping"
 reset
@@ -218,6 +235,34 @@ outer "${rom}"
 grep -qx systemd-run "${STATE}/calls" && fail "${case_name}: systemd-run called"
 logged "microemu-game.scope is still stopping"
 rm -f "${STATE}/game_free_rc"
+
+case_name="stray headless container"
+reset
+: > "${STATE}/stray"
+outer "${rom}"
+[[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}"
+[[ "$(sed -n 5p "${STATE}/calls")" == "systemctl --user show -P ActiveState microemu-play-update.service" ]] || fail "${case_name}: unit state not read: $(calls)"
+[[ "$(sed -n 6p "${STATE}/calls")" == "podman rm -f lepton-headless-microemu-play" ]] || fail "${case_name}: not removed before the run: $(calls)"
+logged "removed a leftover lepton-headless-microemu-play"
+grep -qx systemd-run "${STATE}/calls" || fail "${case_name}: game not started"
+reset
+: > "${STATE}/stray"
+echo deactivating > "${STATE}/update_state"
+outer "${rom}"
+grep -qx "podman rm -f lepton-headless-microemu-play" "${STATE}/calls" && fail "${case_name}: removed while the update unit still runs"
+
+case_name="update entry"
+reset
+: > "${T}/roms/Update Google Play.update"
+outer "${T}/roms/Update Google Play.update"
+[[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}"
+[[ "$(calls)" == $'systemctl --user is-active --quiet gamescope-session-plus@microemu.service\nupdate --no-block' ]] || fail "${case_name}: calls $(calls)"
+reset
+echo inactive > "${STATE}/session"
+outer "${T}/roms/Update Google Play.update"
+[[ "${rc}" == 1 ]] || fail "${case_name}: outside the session exit ${rc}"
+grep -q "^update" "${STATE}/calls" && fail "${case_name}: update started outside the session"
+rm -f "${T}/roms/Update Google Play.update"
 
 case_name="normal game"
 reset
@@ -335,6 +380,49 @@ wait "${pid}" || rc=$?
 grep -qxF "${stop_noblock}" "${STATE}/calls" || fail "${case_name}: no --no-block stop: $(calls)"
 [[ "$(count "${stop_blocking}")" == 0 ]] || fail "${case_name}: blocking stop on a signal"
 [[ -e "${marker}" ]] || fail "${case_name}: no stop marker before the stop"
+
+play_entry="${T}/roms/Play Game.play"
+printf 'com.example.playgame\n' > "${play_entry}"
+
+case_name="play layer off"
+reset
+rm -rf "${MICROEMU_GAPPS}"
+body_play() { rc=0; "${apk}" --body "$1" 2> "${STATE}/stderr" || rc=$?; }
+body_play "${play_entry}"
+[[ "${rc}" == 1 ]] || fail "${case_name}: exit ${rc}"
+logged "the Google Play layer is off, run microemu-gapps-install"
+grep -qxF "systemctl --user start microemu-play.service" "${STATE}/calls" && fail "${case_name}: unit started"
+
+mkdir -p "${MICROEMU_GAPPS}/set"
+ln -s set "${MICROEMU_GAPPS}/current"
+
+case_name="play installed"
+reset
+echo "12 com.android.vending" > "${STATE}/installed"
+body_play "${play_entry}"
+[[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx -e 'sideload prepare' -e 'sideload install' "${STATE}/calls" && fail "${case_name}: sideload ran for a .play"
+grep -qxF "watch com.example.playgame com.example.playgame.Main 10-12 05:00:00.000" "${STATE}/calls" || fail "${case_name}: watcher not on the package and its activity: $(calls)"
+[[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-activity")" == com.example.playgame.Main ]] || fail "${case_name}: play-activity not expanded"
+grep -qxF "podman exec lepton-microemu-play /system/bin/am start -n com.example.playgame/.Main" "${STATE}/calls" || fail "${case_name}: not started: $(calls)"
+
+case_name="play not installed"
+reset
+body_play "${play_entry}"
+[[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}"
+logged "com.example.playgame not installed, opening Google Play"
+grep -qxF "watch com.android.vending com.android.vending.AssetBrowserActivity 10-12 05:00:00.000" "${STATE}/calls" || fail "${case_name}: watcher not on Play: $(calls)"
+[[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-activity")" == com.android.vending.AssetBrowserActivity ]] || fail "${case_name}: play-activity not Play's"
+[[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-pkg")" == com.android.vending ]] || fail "${case_name}: play-pkg is not the launched package"
+grep -qxF "podman exec lepton-microemu-play /system/bin/am start -n com.android.vending/.AssetBrowserActivity" "${STATE}/calls" || fail "${case_name}: Play not opened: $(calls)"
+
+case_name="play bad entry"
+reset
+printf 'not a package; rm -rf\n' > "${T}/roms/bad.play"
+body_play "${T}/roms/bad.play"
+[[ "${rc}" == 1 ]] || fail "${case_name}: exit ${rc}"
+logged "${T}/roms/bad.play does not hold a package name"
+rm -rf "${MICROEMU_GAPPS}"
 
 case_name="term storm"
 reset

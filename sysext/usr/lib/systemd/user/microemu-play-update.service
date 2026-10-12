@@ -1,0 +1,14 @@
+[Unit]
+Description=MicroEMU Google Play update
+Conflicts=microemu-play.service
+Before=microemu-play.service
+
+[Service]
+Type=oneshot
+KillMode=mixed
+ExecStartPre=/usr/bin/podman rm -fi lepton-headless-microemu-play
+ExecStart=/usr/bin/microemu-play-update --body
+ExecStopPost=/usr/libexec/microemu/microemu-play-stop --post --headless
+TimeoutStartSec=31min
+TimeoutStopSec=10
+SyslogIdentifier=microemu-play-update

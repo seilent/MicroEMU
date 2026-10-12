@@ -2,10 +2,21 @@
 set -u
 
 CONTAINER=lepton-microemu-play
+HEADLESS=
+verb=${1:-}
+case "${2:-}" in
+    "") ;;
+    --headless)
+        CONTAINER=lepton-headless-microemu-play
+        HEADLESS="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/headless"
+        ;;
+    *) verb=bad ;;
+esac
+SYNC="${MICROEMU_ANDROID_SYNC:-/usr/libexec/microemu/microemu-android-sync}"
 
 say() { printf 'microemu-play-stop: %s\n' "$*" >&2; }
 
-case "${1:-}" in
+case "${verb}" in
     "")
         podman stop -t 1 "${CONTAINER}" >/dev/null 2>&1
         ;;
@@ -20,9 +31,11 @@ case "${1:-}" in
                 say "cannot remove ${prefix}"
             fi
         fi
+        [[ -z "${HEADLESS}" ]] || rm -rf "${HEADLESS}"
+        "${SYNC}" || say "microemu-android-sync failed"
         ;;
     *)
-        echo "usage: microemu-play-stop [--post]" >&2
+        echo "usage: microemu-play-stop [--post] [--headless]" >&2
         exit 1
         ;;
 esac

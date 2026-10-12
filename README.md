@@ -3,7 +3,7 @@
 An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
 
 Status: the `microemu` gamescope session with ES-DE as its client, the LC hold and
-volume key daemon, RetroArch with 13 Fedora cores, Android `.apk` games through Lepton, the Art Book Next theme and
+volume key daemon, RetroArch with 13 Fedora cores, Android `.apk` games and an optional Google Play layer through Lepton, the Art Book Next theme and
 the guard, written, not run on a device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
 (`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
 
@@ -12,8 +12,9 @@ the guard, written, not run on a device. Targets the AYANEO Pocket MICRO 2. Need
 | Path | Content |
 |---|---|
 | `sysext/` | Static overlay, copied into `dist/` as is, without `__pycache__` or `*.pyc`. `/usr` only, nothing under `/etc`. |
-| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, device scripts for the dev loop. |
-| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host, `systems-test.sh` runs `xmllint`, `shaders-test.sh` runs `zip`, `unzip`, `curl` (file URLs) and `python3`. |
+| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, `stub.sh`, device scripts for the dev loop. |
+| `android/restrictions-stub/` | Source of the `restrictions` binder stub and its init `.rc`, built by `build/stub.sh`. |
+| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host, `systems-test.sh` runs `xmllint`, `stub-test.sh` and `gapps-install-test.sh` run `zip` and `unzip`, `sync-test.sh` runs `python3` with `sqlite3`, `play-update-test.sh` runs `python3`, `shaders-test.sh` runs `zip`, `unzip`, `curl` (file URLs) and `python3`. |
 
 `dist/usr/share/microemu/` holds `version` and `build-manifest` (image digest, `IMAGE_VERSION`, `VERSION_ID`, microemu
 version, the ES-DE version, asset sha256 and size, extracted tree size, the RetroArch version and core count, the slang-shaders commit, Retro Crisis zip sha256 and shader file count, the theme
@@ -41,7 +42,7 @@ session-control through `/usr/lib/armada/sessions.d/microemu.conf` (`DESKTOP=mic
 |---|---|
 | `usr/share/gamescope-session-plus/sessions.d/microemu` | `CLIENTCMD=/usr/libexec/microemu/microemu-client`, `GAMESCOPE_BIN=/usr/libexec/microemu/microemu-gamescope`, no `ORIENTATION` (landscape from the panel). `short_session_recover` starts the switch to game mode with `--no-block`. |
 | `microemu-gamescope` | Drops `--steam` and execs `/usr/bin/gamescope` with the other arguments. Without `--steam`, gamescope focuses ES-DE and the windows it starts with no `STEAM_GAME` atoms. |
-| `microemu-client` | Runs `microemu-game-stop` to clear what a previous session left, links `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` to the shipped file (replacing a file, link or directory there) and removes `es_find_rules.xml` there, then runs ES-DE with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. When ES-DE exits and the unit is `deactivating`, it blocks in `sleep infinity`. Otherwise (ES-DE quit, crash or missing) it runs `systemctl start armada-session-switch@gamemode.service`, retries once after 2 s, then blocks in `sleep infinity`; after a second failure it exits 1. |
+| `microemu-client` | Runs `microemu-game-stop` to clear what a previous session left, links `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` to the shipped file (replacing a file, link or directory there) and removes `es_find_rules.xml` there, then runs ES-DE with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. While `$XDG_RUNTIME_DIR/microemu/esde-reload` exists and `microemu-game.scope` is not active (checked every second), it removes the file, sends ES-DE SIGTERM and starts it again in place, on the Android Games gamelist (`StartupSystem` `androidgames`, `StartupView` `gamelist` in `es_settings.xml`; the previous lines are kept in `settings/microemu-startup.saved` and put back after that ES-DE exits, or at the next client start, unless the startup setting was changed meanwhile). When ES-DE exits and the unit is `deactivating`, it blocks in `sleep infinity`. Otherwise (ES-DE quit, crash or missing) it runs `systemctl start armada-session-switch@gamemode.service`, retries once after 2 s, then blocks in `sleep infinity`; after a second failure it exits 1. |
 | `microemu-leave session` | Inside the microemu session, `systemctl --no-block start armada-session-switch@gamemode.service`, then returns. Elsewhere a log line. |
 | `microemu-game-stop` | Runs every executable in `/usr/libexec/microemu/game-stop.d/` in name order within 5 s in total (each hook gets what is left, SIGKILL 1 s after its bound; one that would start after the 5 s is skipped; a failure is logged, the rest still run), then `systemctl --user reset-failed`, `stop`, `reset-failed` of `microemu-game.scope`. A game that outlives the scope stops through a hook there. |
 | `microemu-stop` | `ExecStop` of the session, bounded at 15 s (SIGKILL 2 s later): `microemu-game-stop`, then SIGTERM to the process whose `/proc/<pid>/exe` is `/usr/lib/microemu/es-de/usr/bin/es-de` and whose cgroup is the microemu session unit, every 500 ms up to 6 times or until it exits, then a blocking stop of `microemu-play.service` within what is left. |
@@ -175,15 +176,17 @@ extensions, platform and theme:
 
 ## Android
 
-The `androidgames` system lists `.apk` files under `~/ROMs/androidgames/` and runs `/usr/libexec/microemu/microemu-apk
+The `androidgames` system lists `.apk`, `.play` and `.update` files under `~/ROMs/androidgames/` and runs `/usr/libexec/microemu/microemu-apk
 <apk>`. Every Android game runs in one persistent Lepton context, `microemu-play`
 (`~/.local/share/lepton/contexts/microemu-play`), through Steam's Lepton and Armada's `lepton-armada`. The container lives
 for one game: only a stopped container gives ES-DE focus back.
 
 `microemu-apk` exits 1 with a journal line outside the microemu session, when `lepton-armada` is missing, for a file that
 is not an `.apk`, or for one outside `$HOME` and `/run/media/$USER` (the only host paths `lepton-armada` mounts into the
-container); otherwise it runs `microemu-game-free` and runs itself in the `microemu-game` scope (`systemd-run
---expand-environment=no`, as the RetroArch wrapper). There, with an EXIT trap that stops `microemu-play.service` (`--no-block` on a signal):
+container). An `.update` entry runs `microemu-play-update --no-block` and returns. Otherwise it stops
+`microemu-play-update.service`, removes a `lepton-headless-microemu-play` container left with that unit `inactive` or
+`failed` (`removed a leftover lepton-headless-microemu-play`), runs `microemu-game-free`, and runs itself in the
+`microemu-game` scope (`systemd-run --expand-environment=no`, as the RetroArch wrapper). There, with an EXIT trap that stops `microemu-play.service` (`--no-block` on a signal):
 
 1. `microemu-sideload prepare`: the package name, and OBB files (`obb/*.obb` beside the APK or `*.obb` in its directory)
    copied to the context's `external/Android/obb/<pkg>/` when missing or changed.
@@ -214,7 +217,7 @@ runs `microemu-play-run`, which writes `$XDG_RUNTIME_DIR/microemu/lepton/contain
 |---|---|
 | annotation | `run.oci.systemd.subgroup=app-steam-app1-1.scope`: gamescope takes the Android window's appid from the container's cgroup name, so it can take focus over ES-DE |
 | mounts | each `xb360` node at the same path, `rw`; `$XDG_RUNTIME_DIR/microemu/lepton/odm-build.prop` over `/vendor/odm/etc/build.prop`, `ro` |
-| odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density=213` (a portrait app's 426 px column is 320 dp) , `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off) and `pm.dexopt.install=speed` (installs and updates compile with `speed`) |
+| odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density` from `/usr/share/microemu/android/display` (`density=213`: a portrait app's 426 px column is 320 dp) , `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off) and `pm.dexopt.install=speed` (installs and updates compile with `speed`) |
 | environment | `TERM=dumb`, `APP_WANTS_FLATSCREEN=true`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`, `STEAM_COMPAT_DATA_PATH` the context (shared storage kept in `external/`), `LEPTON_NO_CLEANUP=true`, `LEPTON_KEEP_CONTEXT=1`, no `SteamAppId` or `LD_LIBRARY_PATH`; `internal/` created first |
 
 Lepton's output before the boot goes to the journal, after it to `~/.local/share/microemu/android/lepton.log`. A
@@ -266,20 +269,143 @@ Sideloads (`microemu-sideload install`), with per package state in `~/.local/sha
   `microemu-android-prune [<pkg>...]` queues stale packages; the next `.apk` launch uninstalls the ones still stale, and
   keeps a failed uninstall queued with its state.
 
-`microemu-play-reset` removes the context and the sideload state (refused while the unit runs, the container exists, or
-`podman container exists` fails); the next
-launch boots a fresh context and installs every `.apk` again.
+`microemu-play-reset` removes the context and the sideload state (refused while `microemu-play.service` or
+`microemu-play-update.service` runs, `lepton-microemu-play` or `lepton-headless-microemu-play` exists, or `podman container
+exists` fails); the next
+launch boots a fresh context and installs every `.apk` again. Play games are gone with the context, so the sync after
+that launch deletes their `.play` entries.
 
 An LC hold while `microemu-play.service` is active, booting or stopping runs `microemu-game-stop`. Its `50-android` hook,
 while the unit is active, starts the home activity (`am start -W -a android.intent.action.MAIN -c
 android.intent.category.HOME`; `input keyevent KEYCODE_HOME` does nothing in Lepton's guest), waits up to 1 s for
 the game's `wm_on_stop_called` event so it can save (the line names the activity class: it must equal the game's launcher activity from
 `$XDG_RUNTIME_DIR/microemu/play-activity`, else, with no activity known, a class in the game's package; Launcher3's
-own stop never counts), then force-stops the launched package (`$XDG_RUNTIME_DIR/microemu/play-pkg`, written by `microemu-apk`), then starts a
+own stop never counts), then force-stops the launched package (`$XDG_RUNTIME_DIR/microemu/play-pkg`, written by `microemu-apk` once it knows it: the
+`.apk`'s or `.play`'s package, or Play Store's for a `.play` not installed), then starts a
 `--no-block` stop of the unit; during the boot it only stops the unit. Each guest command is bounded at 1 s.
 `microemu-stop` stops the game, then ES-DE, then waits for the unit with what is left of its 15 s. B on the game's root
 activity reaches ES-DE about 2.6 to 3 s after the press (the watcher about 0.9 s plus up to 1 s waiting for the
 game's onStop, measured 0.3 s; the container stop about 1.7 s).
+
+### Google Play
+
+Optional, and off until `microemu-gapps-install` runs. Google's APKs are not part of microemu: that command downloads them
+on the device.
+
+`microemu-gapps-install` (refused while `microemu-play.service` or `microemu-play-update.service` runs, or either container
+exists):
+
+1. Downloads MindTheGapps 11.0.0 arm64 `20230922_081122` and 14.0.0 arm64 `20250203_200051` from GitHub with `curl
+   --proto =https --proto-redir =https` into `~/.cache/microemu/gapps/`, checked by size and sha256.
+2. Extracts GSF, GmsCore 20.45.16, the permission and sysconfig XMLs from MTG 11 and Play Store 36.6.25 from MTG 14
+   (MTG 11's Play Store has no arm64 libraries) into `~/.local/share/microemu/gapps/mtg11-20230922.vending-36.6.25.tmp/`,
+   and writes `privapp-permissions-google-p.xml` with MTG 14's `com.android.vending` block. Every file is checked
+   against its pinned sha256.
+3. Writes `STAMP` last (`set=<name>`, then `<sha256> <size> <path>` per file), makes the set read only, renames it,
+   points `current` at it (`ln -sfn` then `mv -T`), deletes the zips, and writes `~/ROMs/androidgames/Google Play.play`
+   when missing (a reinstall restores it), and `Update Google Play.update` plus the marker
+   `~/.local/share/microemu/gapps/update-entry` unless the marker exists. A complete set is left alone; a `.tmp` from an
+   interrupted run is removed first.
+4. Runs `microemu-play-update --setup` in the foreground and exits 1 with `Play services not updated, run microemu-gapps-install
+   again` when it fails.
+
+With the layer on (`current` exists, or the context's `microemu-stamp` names a set), every `microemu-play-run` start checks
+that `current`, its `STAMP`, every listed file with its size, and the restrictions stub exist, and refuses with
+`gapps tree incomplete, run microemu-gapps-install` otherwise: booting the context once without them makes Android drop
+the GMS and GSF data (the account and the registration). It then mounts each tree file at its path and the stub, `ro`:
+
+| Host | Container |
+|---|---|
+| `/usr/share/microemu/android/microemu-restrictions-stub.jar` | `/system/framework/microemu-restrictions-stub.jar` |
+| `/usr/share/microemu/android/microemu-restrictions-stub.rc` | `/system/etc/init/microemu-restrictions-stub.rc` |
+
+Lepton's SystemServer does not start `RestrictionsManagerService`, and Play crashes at start without a `restrictions`
+service. The stub (`android/restrictions-stub/`) is a `Binder` registered as `restrictions` from a root `app_process`,
+answering `IRestrictionsManager` with an empty `Bundle` and no provider. `build/stub.sh` builds it from source with
+`platform-30_r03.zip`'s `android.jar` and R8 8.5.35 (both sha256 pinned, Armada's `BASE.env` pins) through `javac
+--release 11` and D8, and checks the jar holds one `classes.dex` naming `RestrictionsStub`.
+
+The first boot with a new set grants GMS location and contacts permissions, then records the set in `microemu-stamp`,
+only when every grant succeeded (otherwise the next start retries).
+
+`.play` entries in `~/ROMs/androidgames/` hold one package name. `microemu-apk` refuses them while the layer is off;
+otherwise it starts the container, then the package's launcher activity, or Play Store's when the package is not
+installed (`<pkg> not installed, opening Google Play`, the watcher on `com.android.vending`). `Google Play.play` opens
+the store.
+
+After every container stop, `microemu-android-sync` reads the context's `packages.xml` and Launcher3's `app_icons.db` on
+the host and writes `<label>.play` for each package installed from Play (`installer="com.android.vending"`) that is not
+a system or updated system package, not Play, GMS or GSF, and has a launcher label; a package already held by a
+`.play` file anywhere under `~/ROMs/androidgames/` is skipped, so renamed or moved entries stay. Names drop control,
+path and FAT illegal characters (`: ? * " < > |`) and are cut to 200 UTF-8 bytes; a failed write is logged and the
+next package goes on. Before that it deletes every `.play` file under `~/ROMs/androidgames/` whose package was in
+`packages.xml` at the previous sync and is not now (`removed <name>, <pkg> not installed`), except `Google Play.play`
+and `com.android.vending`; the previous set is kept in `~/.local/share/microemu/android/play-installed`, so a `.play`
+for a package that was never installed stays and opens Google Play. With `packages.xml` missing, unreadable or
+without packages it deletes nothing and keeps the previous set. When it wrote or removed at least one
+entry it creates `$XDG_RUNTIME_DIR/microemu/esde-reload`: ES-DE reads gamelists only at start (v3.5.0 has no reload
+signal, file watch or IPC), so `microemu-client` restarts it after the game. ES-DE restarts on Android Games when Play
+entries appear or go.
+It reads the GSF ID first, from `gservices.db` into
+`~/.local/share/microemu/gapps/gsf-id` and logs `GSF ID <id>, register it at https://www.google.com/android/uncertified`
+when it changes. Sign in works once the ID is registered.
+
+#### Updates
+
+Play updates itself and GMS from a job that runs 10 min after boot, with or without an account. Updates run by hand: `microemu-play-update`, or `Update Google Play` in ES-DE's Android Games.
+
+`microemu-play-update [--no-block] [--clear-play] [--setup]` refuses (journal line, exit 1) while `microemu-play.service`
+runs, while `lepton-microemu-play` exists, with the layer off, or with `microemu-play-update.service already running`
+(active or activating; no option is recorded then). Otherwise it starts `microemu-play-update.service` and
+follows its journal; `--no-block` (the ES-DE entry) starts it and returns. The unit (`Type=oneshot`, `KillMode=mixed`,
+`TimeoutStartSec=31min`, `Conflicts=` and `Before=microemu-play.service`, `SyslogIdentifier=microemu-play-update`, no
+dependency on the session) checks again that `microemu-play.service` is inactive, then starts a private gamescope:
+`$XDG_RUNTIME_DIR/microemu/headless/` emptied and made 0700, gamescope run as `--backend headless -W <width>
+-H <height> --expose-wayland -R <dir>/ready -- sleep infinity` with `XDG_RUNTIME_DIR` set to that dir, width and height
+from `/usr/share/microemu/android/display`, output in `~/.local/share/microemu/android/headless-gamescope.log`. It waits
+up to 10 s for the `<X display> <wayland socket>` line gamescope writes to `ready` (`headless gamescope did not start`,
+exit 1, otherwise), then runs `microemu-play-run --headless` with `GAMESCOPE_WAYLAND_DISPLAY=microemu/headless/<socket>`:
+the same context and mounts minus microemu's pad nodes, Lepton context name `headless-microemu-play` (container
+`lepton-headless-microemu-play`, `lepton.headless=true`, no window), `ARMADA_EXT_WAYLAND_DISPLAY=` (no second display),
+no `systemd-notify`. The guest composer is on that gamescope, not the session's.
+`microemu-play-run --headless` refuses without a socket at `$XDG_RUNTIME_DIR/<dir>/<socket>`; either mode refuses while
+the other mode's container exists. The gamescope is stopped and the dir removed on every exit, and again by
+`ExecStopPost=`. After `sys.boot_completed` is `1`, every 10 s the unit reads the versionCodes of
+`com.google.android.gms` and `com.android.vending` from the context's `packages.xml` on the
+host and logs each change, with a progress line every minute; Play's install status is not read. In maintenance runs it
+also counts the `Session <id>:` lines under `Active install sessions:` in the guest's `dumpsys package installs` (an
+unreadable list counts as a session): Play installs GMS about 80 s after its own update. The `dumpsys` runs in the
+background, so a stop request does not wait for it. A `dex2oat` process in the guest (`pidof dex2oat64 dex2oat32
+dex2oat`, an unreadable answer counts as one) holds every done rule like an install session.
+
+| Run | Done (`podman exec ... sync`, `podman stop -t 5`, exit 0) | Otherwise |
+|---|---|---|
+| Setup: `--setup` (`microemu-gapps-install`), or GMS or Play not above the tree's 204516046 and 83662520 at the start | GMS and Play above the tree's versions | after 20 min `play services update not done after 20 min (GMS <v>, Play <v>)`, exit 1, plus a line naming `--clear-play` when GMS is still the tree's |
+| Maintenance: both above the tree's at the start | 30 s after the last change of either with no install session, or `already current after 13 min` (counted from boot) with no change and no session; when a GMS session (`appPackageName=com.google.android.gms`) was seen and GMS did not change, the line is `GMS install session ended without an update (GMS <v>), Play backs off; microemu-play-update --clear-play schedules it at once` | `stopped after 20 min`, exit 0, or `stopped after 20 min with an install session active, run microemu-play-update again` |
+
+When a run ends by a done rule or `already current`, before the stop it compiles with `speed` the apps whose versionCode in `packages.xml` changed since the
+last compile (`cmd_real package list packages -3` plus GMS, GSF and Play; the compiled versions are kept in
+`microemu-compiled` in the context), one `compile -m speed <pkg>` at a time, at most 10 min (`compile stopped after 10
+min at <pkg>`, the next run goes on). Runs that end at the 20 min bound or with the GMS session line do not compile;
+the next run does. A stop request during the compile syncs, stops the container after 1 s and exits
+0 (`stop requested during the compile, the update is kept`).
+
+`--clear-play` runs `pm clear com.android.vending` once Android booted, which makes Play schedule its updates at once;
+it also resets Play's own settings, so it is not the default. `ExecStopPost=` is `microemu-play-stop --post --headless`,
+so `microemu-android-sync` runs after it too.
+
+Any Android launch stops a running update: `microemu-apk` stops the unit before its scope and resets its `failed`
+state, and a start of
+`microemu-play.service` stops it through `Conflicts=`. A RetroArch game and leaving the microemu session do not: the update runs on
+until it ends or `device-off`. A stop is
+`podman stop -t 1` (TERM to `microemu-play-run` and Lepton when no container exists yet), `stop requested, update
+interrupted`, exit 2. In the foreground the command follows the journal with `-t microemu-play-update` and prints the
+unit's `Result` when it is not `success`, or `stopped` when the start failed and the unit was reset meanwhile.
+
+`microemu-android-sync` writes `Update Google Play.update` when the layer is on, the marker is absent and no `.update`
+file exists under `~/ROMs/androidgames/`, then the marker (also when a `.update` file exists), so a deleted entry
+stays deleted. `microemu-play-reset --gapps` also removes `~/.local/share/microemu/gapps/`, `Google Play.play` and
+`Update Google Play.update`.
 
 ## Theme
 
@@ -356,21 +482,25 @@ with microdap's `dist/` (`MICRODAP_DIST`, default `../MicroDAP/dist`) at build t
 
 The builder container is `FROM` the exact Armada image the device runs, pinned by digest in `build/base.env`
 (`20261011.b995457`, the first with session drop-in support, the digest microdap pins). The image already carries what the build uses (`curl`, `sha256sum`,
-`od`, `dd`, `du`, `unsquashfs`, `mksquashfs`, `rpm`, `rpm2cpio`, `cpio`, `tar`), so the Containerfile installs nothing. Build host is any podman on
-arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount the interpreter into the container).
+`od`, `dd`, `du`, `unsquashfs`, `mksquashfs`, `rpm`, `rpm2cpio`, `cpio`, `tar`, `unzip`); the Containerfile adds
+`java-25-openjdk-devel` for the restrictions stub. Build host is any podman on arm64, or with an arm64 binfmt
+registered with the `F` flag (without it, mount the interpreter into the container, `podman build --volume` and
+`podman run -v` both).
 
 ## Recipes
 
 | Recipe | Does |
 |---|---|
 | `just base` | Reads `IMAGE_VERSION`, `VERSION_ID` and the booted image digest from the device into `build/base.env`. |
-| `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh`, `build/retroarch.sh` and `build/theme.sh`, writes `version` and `build-manifest`. |
+| `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh`, `build/retroarch.sh`, `build/theme.sh` and `build/stub.sh`, writes `version` and `build-manifest`. |
 | `just build` | `dist` plus `microemu-<ver>-armada<VERSION_ID>-arm64.raw` (squashfs, zstd). |
 | `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload` and a restart of `microemu-hotkeyd.service` and `microemu-guard.service`. |
 | `just test-paths` | `tests/paths-test.sh` against microdap's `dist/`: fails on any path both ship. |
 | `just off` | Copies `build/device-off` to `/var/tmp/microemu-off` and runs it as root on the device. |
 | `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`, `tests/theme-test.sh`, `tests/play-unit-test.sh`, `tests/apk-test.sh`,
-`tests/sideload-test.sh`, `tests/android-hook-test.sh`, `tests/reset-test.sh`, `tests/pad-fuzz-test.sh`, `tests/guard-test.sh`, `tests/paths-test.sh` (prints `skip` without `MICROEMU_OTHER_DIST`). |
+`tests/sideload-test.sh`, `tests/android-hook-test.sh`, `tests/reset-test.sh`, `tests/pad-fuzz-test.sh`,
+`tests/stub-test.sh`, `tests/gapps-install-test.sh`, `tests/play-update-test.sh`, `tests/sync-test.sh` (the download pin overrides of `build/stub.sh`, `build/shaders.sh`
+and `microemu-gapps-install` apply only with `MICROEMU_TEST=1`), `tests/guard-test.sh`, `tests/paths-test.sh` (prints `skip` without `MICROEMU_OTHER_DIST`). |
 
 `MICROEMU_DEVICE` overrides `armada@pm2`. Root steps run through `ssh -t` and `sudo`.
 
@@ -384,12 +514,12 @@ arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount t
 2. Goes on when the state is `inactive` or `failed`, or empty while `user@<uid>.service` is not active, and no
    `/etc/sddm.conf.d/*.conf` has a `Session=microemu.desktop` line (whitespace and CR allowed). An empty state with the
    user manager up is a failed query and counts as running. On timeout it exits 1 and changes nothing.
-3. Stops `microemu-hotkeyd.service`, `microemu-pad.service` and `microemu-guard.service` as the user.
+3. Stops `microemu-hotkeyd.service`, `microemu-pad.service`, `microemu-guard.service` and `microemu-play-update.service` as the user.
 4. Removes `/var/lib/extensions/microemu`, `/var/lib/extensions/microemu.raw`, `/run/microemu` and the user's
    `$XDG_RUNTIME_DIR/microemu` only, then `systemd-sysext refresh`, `systemctl
    daemon-reload` and `systemctl --user daemon-reload` as the user.
-5. Stops and resets `microemu-hotkeyd.service` again: `Upholds=` from `default.target` starts it again after step 3
-   while the unit is still merged.
+5. Stops and resets `microemu-hotkeyd.service` again (`Upholds=` from `default.target` starts it again after step 3
+   while the unit is still merged) and resets `microemu-play-update.service`, which a stop leaves `failed`.
 6. `systemctl restart polkit`.
 
 Other extensions (microdap) stay merged. The user is `SUDO_USER`, else `armada`; user commands run through `runuser`
@@ -414,4 +544,5 @@ the same steps as `build/device-off`.
 
 GPL-2.0-or-later. See [LICENSE](LICENSE). ES-DE is MIT licensed. RetroArch, mbedtls and the cores keep their own
 licenses, shipped in `/usr/share/licenses/microemu/`. The Art Book Next theme is by Anthony Caccese and the people
-credited in `art-book-next.txt`, licensed CC BY-NC-SA 2.0 (https://creativecommons.org/licenses/by-nc-sa/2.0/).
+credited in `art-book-next.txt`, licensed CC BY-NC-SA 2.0 (https://creativecommons.org/licenses/by-nc-sa/2.0/). Google's APKs are
+not shipped: `microemu-gapps-install` downloads them on the device.

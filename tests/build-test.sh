@@ -31,6 +31,7 @@ reset() {
     printf '#!/usr/bin/bash\necho RETROARCH_VERSION=1.22.0-20.fc44\n' > "${work}/build/retroarch.sh"
     printf '#!/usr/bin/bash\necho SLANG_SHADERS_COMMIT=abc\n' > "${work}/build/shaders.sh"
     printf '#!/usr/bin/bash\necho THEME=art-book-next-es-de\n' > "${work}/build/theme.sh"
+    printf '#!/usr/bin/bash\necho STUB_SHA256=abc\n' > "${work}/build/stub.sh"
     . "${repo}/build/base.env"
     printf 'ID=armada\nVERSION_ID="%s"\nIMAGE_VERSION="%s"\n' "${VERSION_ID}" "${IMAGE_VERSION}" \
         > "${MICROEMU_BUILDER_ROOT}/usr/lib/os-release"
@@ -63,6 +64,7 @@ grep -qx "ESDE_VERSION=3.5.0" "${work}/dist/usr/share/microemu/build-manifest" |
 grep -qx "RETROARCH_VERSION=1.22.0-20.fc44" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no retroarch lines in the manifest"
 grep -qx "SLANG_SHADERS_COMMIT=abc" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no shader lines in the manifest"
 grep -qx "THEME=art-book-next-es-de" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no theme lines in the manifest"
+grep -qx "STUB_SHA256=abc" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no stub lines in the manifest"
 for path in /usr/lib/extension-release.d/extension-release.microemu /usr/share/microemu/paths /usr/share/microemu/build-manifest /usr/share/microemu/version; do
     grep -qx "${path}" "${work}/dist/usr/share/microemu/paths" || fail "matching: ${path} not in the paths list"
 done

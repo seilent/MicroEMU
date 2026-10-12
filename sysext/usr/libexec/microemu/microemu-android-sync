@@ -1,0 +1,254 @@
+#!/usr/bin/python3
+import os
+import re
+import shutil
+import sqlite3
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+
+HOME = os.path.expanduser("~")
+CONTEXT = os.environ.get("MICROEMU_PLAY_CONTEXT", os.path.join(HOME, ".local/share/lepton/contexts/microemu-play"))
+ROMS = os.environ.get("MICROEMU_ANDROID_ROMS", os.path.join(HOME, "ROMs/androidgames"))
+GAPPS = os.environ.get("MICROEMU_GAPPS", os.path.join(HOME, ".local/share/microemu/gapps"))
+ANDROID_DATA = os.environ.get("MICROEMU_ANDROID_DATA", os.path.join(HOME, ".local/share/microemu/android"))
+SEEN = os.path.join(ANDROID_DATA, "play-installed")
+RUNTIME = os.environ.get("MICROEMU_RUNTIME_DIR") or os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microemu")
+DATA = os.path.join(CONTEXT, "baked/data_overlay")
+PACKAGES_XML = os.path.join(DATA, "system/packages.xml")
+ICONS_DB = os.path.join(DATA, "data/com.android.launcher3/databases/app_icons.db")
+GSERVICES_DB = os.path.join(DATA, "data/com.google.android.gsf/databases/gservices.db")
+UPDATE_ENTRY = "Update Google Play.update"
+GOOGLE = {"com.android.vending", "com.google.android.gms", "com.google.android.gsf"}
+FLAG_SYSTEM = 1
+NAME_BYTES = 200
+PACKAGE_NAME = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$")
+ACTIVITY = re.compile(r"^(\.?([A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*|\.[A-Za-z_$][\w$]*)$")
+
+
+def say(message):
+    print(f"microemu-android-sync: {message}", file=sys.stderr)
+
+
+def query(path, sql, args=()):
+    if not os.path.exists(path):
+        return []
+    try:
+        with sqlite3.connect(f"file:{path}?immutable=1", uri=True) as db:
+            return db.execute(sql, args).fetchall()
+    except sqlite3.Error:
+        pass
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = os.path.join(tmp, os.path.basename(path))
+        shutil.copy2(path, copy)
+        for suffix in ("-journal", "-wal", "-shm"):
+            if os.path.exists(path + suffix):
+                shutil.copy2(path + suffix, copy + suffix)
+        try:
+            with sqlite3.connect(copy) as db:
+                return db.execute(sql, args).fetchall()
+        except sqlite3.Error as error:
+            say(f"cannot read {path}: {error}")
+            return []
+
+
+def play_packages():
+    try:
+        root = ET.parse(PACKAGES_XML).getroot()
+    except (OSError, ET.ParseError) as error:
+        say(f"cannot read {PACKAGES_XML}: {error}")
+        return []
+    updated = {node.get("name") for node in root.findall("updated-package")}
+    found = []
+    for node in root.findall("package"):
+        name = node.get("name", "")
+        if node.get("installer") != "com.android.vending" or name in GOOGLE or name in updated:
+            continue
+        try:
+            flags = int(node.get("publicFlags", "0"))
+        except ValueError:
+            flags = 0
+        if flags & FLAG_SYSTEM:
+            continue
+        if PACKAGE_NAME.match(name):
+            found.append(name)
+    return found
+
+
+def labels():
+    rows = {}
+    for component, label in query(ICONS_DB, "select componentName, label from icons"):
+        if not component or not label or "/" not in component:
+            continue
+        package, cls = component.split("/", 1)
+        if not ACTIVITY.match(cls):
+            continue
+        rows.setdefault(package, []).append((not cls.endswith("Activity"), cls, label))
+    return {package: sorted(found)[0][2] for package, found in rows.items()}
+
+
+def installed_packages():
+    try:
+        root = ET.parse(PACKAGES_XML).getroot()
+    except (OSError, ET.ParseError):
+        return set()
+    return {node.get("name") for node in root.findall("package") if node.get("name")}
+
+
+def remove_entries():
+    if not os.path.isdir(ROMS):
+        return 0
+    installed = installed_packages()
+    if not installed:
+        say(f"no installed packages read from {PACKAGES_XML}, no .play entry removed")
+        return 0
+    try:
+        with open(SEEN) as handle:
+            seen = {line.strip() for line in handle if line.strip()}
+    except OSError:
+        seen = set()
+    try:
+        os.makedirs(ANDROID_DATA, exist_ok=True)
+        with open(SEEN + ".new", "w") as handle:
+            handle.write("".join(f"{name}\n" for name in sorted(installed)))
+        os.replace(SEEN + ".new", SEEN)
+    except OSError as error:
+        say(f"cannot write {SEEN}: {error}")
+    removed = 0
+    for directory, _, files in os.walk(ROMS):
+        for entry in files:
+            if not entry.lower().endswith(".play") or entry == "Google Play.play":
+                continue
+            path = os.path.join(directory, entry)
+            try:
+                with open(path) as handle:
+                    package = handle.readline().strip()
+            except OSError:
+                continue
+            if not PACKAGE_NAME.match(package) or package in installed or package not in seen or package == "com.android.vending":
+                continue
+            try:
+                os.remove(path)
+            except OSError as error:
+                say(f"cannot remove {entry}: {error}")
+                continue
+            say(f"removed {entry}, {package} not installed")
+            removed += 1
+    return removed
+
+
+def existing_entries():
+    held = set()
+    for directory, _, files in os.walk(ROMS):
+        for entry in files:
+            if not entry.lower().endswith(".play"):
+                continue
+            try:
+                with open(os.path.join(directory, entry)) as handle:
+                    held.add(handle.readline().strip())
+            except OSError:
+                continue
+    return held
+
+
+def truncate(text, limit):
+    data = text.encode()
+    if len(data) <= limit:
+        return text
+    return data[:limit].decode(errors="ignore").rstrip()
+
+
+def file_name(label, package):
+    clean = re.sub(r'[\x00-\x1f\x7f/\\:?*"<>|]+', " ", label)
+    clean = re.sub(r"\s+", " ", clean).strip().lstrip(".").strip()
+    if not clean:
+        return None
+    name = f"{truncate(clean, NAME_BYTES)}.play"
+    if os.path.exists(os.path.join(ROMS, name)):
+        name = f"{truncate(clean, NAME_BYTES - len(package.encode()) - 3)} ({package}).play"
+    return name
+
+
+def sync_entries():
+    if not os.path.isdir(ROMS):
+        say(f"{ROMS} missing, no .play entries written")
+        return 0
+    held = existing_entries()
+    names = labels()
+    written = 0
+    for package in play_packages():
+        if package in held or package not in names:
+            continue
+        name = file_name(names[package], package)
+        if not name or os.path.exists(os.path.join(ROMS, name)):
+            continue
+        try:
+            with open(os.path.join(ROMS, name), "w") as handle:
+                handle.write(package + "\n")
+        except OSError as error:
+            say(f"cannot write {name} for {package}: {error}")
+            continue
+        say(f"wrote {name} for {package}")
+        written += 1
+    return written
+
+
+def sync_update_entry():
+    marker = os.path.join(GAPPS, "update-entry")
+    if not os.path.exists(os.path.join(GAPPS, "current")) or not os.path.isdir(ROMS) or os.path.exists(marker):
+        return 0
+    held = any(entry.lower().endswith(".update") for _, _, files in os.walk(ROMS) for entry in files)
+    written = 0
+    if not held:
+        try:
+            open(os.path.join(ROMS, UPDATE_ENTRY), "w").close()
+        except OSError as error:
+            say(f"cannot write {UPDATE_ENTRY}: {error}")
+            return 0
+        say(f"wrote {UPDATE_ENTRY}")
+        written = 1
+    try:
+        open(marker, "w").close()
+    except OSError as error:
+        say(f"cannot write {marker}: {error}")
+    return written
+
+
+def request_reload():
+    try:
+        os.makedirs(RUNTIME, exist_ok=True)
+        open(os.path.join(RUNTIME, "esde-reload"), "w").close()
+    except OSError as error:
+        say(f"cannot ask es-de to reload: {error}")
+
+
+def sync_gsf_id():
+    rows = query(GSERVICES_DB, "select value from main where name = ?", ("android_id",))
+    if not rows or not rows[0][0]:
+        return
+    gsf_id = str(rows[0][0])
+    path = os.path.join(GAPPS, "gsf-id")
+    try:
+        with open(path) as handle:
+            if handle.read().strip() == gsf_id:
+                return
+    except OSError:
+        pass
+    try:
+        os.makedirs(GAPPS, exist_ok=True)
+        with open(path, "w") as handle:
+            handle.write(gsf_id + "\n")
+    except OSError as error:
+        say(f"cannot write {path}: {error}")
+    say(f"GSF ID {gsf_id}, register it at https://www.google.com/android/uncertified")
+
+
+def main():
+    sync_gsf_id()
+    if remove_entries() + sync_entries() + sync_update_entry():
+        request_reload()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

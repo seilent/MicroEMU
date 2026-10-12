@@ -238,5 +238,6 @@ install() {
 case "${1:-}" in
     prepare) [[ -n "${2:-}" ]] || exit 1; prepare "$2" ;;
     install) [[ -n "${2:-}" ]] || exit 1; install "$2" ;;
-    *) echo "usage: microemu-sideload prepare|install <apk>" >&2; exit 1 ;;
+    installed) [[ -n "${2:-}" ]] || exit 1; installed "$2" ;;
+    *) echo "usage: microemu-sideload prepare|install <apk> | installed <pkg>" >&2; exit 1 ;;
 esac

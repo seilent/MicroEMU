@@ -8,6 +8,10 @@ APPDATA="${MICROEMU_ESDE_APPDATA_DIR:-${HOME}/.local/share/microemu/ES-DE}"
 SESSION=gamescope-session-plus@microemu.service
 SWITCH=armada-session-switch@gamemode.service
 GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+RELOAD="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/esde-reload"
+POLL_S="${MICROEMU_CLIENT_POLL_S:-1}"
+SETTINGS="${APPDATA}/settings/es_settings.xml"
+SAVED="${APPDATA}/settings/microemu-startup.saved"
 
 log() { logger -t microemu-client -- "$*" 2>/dev/null || true; }
 
@@ -51,16 +55,62 @@ ApplicationUpdaterFrequency never
 SETTINGS
 }
 
+setting() {
+    sed -nE "s/.*<string[[:space:]]+name=\"$1\"[[:space:]]+value=\"([^\"]*)\".*/\1/p" "${SETTINGS}" | tail -n 1
+}
+
+start_on_android() {
+    [[ -e "${SAVED}" ]] || grep -E '<string[[:space:]]+name="Startup(System|View)"' "${SETTINGS}" > "${SAVED}"
+    sed -i -E '/<string[[:space:]]+name="Startup(System|View)"/d' "${SETTINGS}"
+    printf '<string name="StartupSystem" value="androidgames" />\n<string name="StartupView" value="gamelist" />\n' >> "${SETTINGS}"
+}
+
+restore_startup() {
+    [[ -e "${SAVED}" ]] || return 0
+    if [[ "$(setting StartupSystem)" == androidgames && "$(setting StartupView)" == gamelist ]]; then
+        sed -i -E '/<string[[:space:]]+name="Startup(System|View)"/d' "${SETTINGS}"
+        cat "${SAVED}" >> "${SETTINGS}"
+    fi
+    rm -f "${SAVED}"
+}
+
+run_esde() {
+    local pid hold
+    reload=0
+    exec {hold}<> <(:)
+    "${ESDE}" &
+    pid=$!
+    while kill -0 "${pid}" 2>/dev/null; do
+        if (( ! reload )) && [[ -e "${RELOAD}" ]] && ! systemctl --user is-active --quiet microemu-game.scope; then
+            reload=1
+            rm -f "${RELOAD}"
+            log "new Android entries, restarting es-de"
+            kill -TERM "${pid}"
+        fi
+        read -r -t "${POLL_S}" -u "${hold}" _
+    done
+    exec {hold}<&-
+    rc=0
+    wait "${pid}" || rc=$?
+    log "es-de exited with ${rc}"
+}
+
 "${GAME_STOP}"
 setup_systems
 setup_themes
 seed_settings
+restore_startup
+rm -f "${RELOAD}"
 export ESDE_APPDATA_DIR="${APPDATA}"
 
 if [[ -x "${ESDE}" ]]; then
-    rc=0
-    "${ESDE}" || rc=$?
-    log "es-de exited with ${rc}"
+    while :; do
+        run_esde
+        (( reload )) || break
+        [[ "$(systemctl --user show -p ActiveState --value "${SESSION}" 2>/dev/null)" != deactivating ]] || break
+        start_on_android
+    done
+    restore_startup
 else
     log "${ESDE} missing"
 fi

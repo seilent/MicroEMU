@@ -5,10 +5,12 @@ SESSION=gamescope-session-plus@microemu.service
 LEPTON="${MICROEMU_LEPTON:-/usr/share/steam/compatibilitytools.d/lepton-armada/lepton}"
 SIDELOAD="${MICROEMU_SIDELOAD:-/usr/libexec/microemu/microemu-sideload}"
 WATCH="${MICROEMU_APK_WATCH:-/usr/libexec/microemu/microemu-apk-watch}"
+UPDATE="${MICROEMU_PLAY_UPDATE:-/usr/bin/microemu-play-update}"
 GAME_FREE="${MICROEMU_GAME_FREE:-/usr/libexec/microemu/microemu-game-free}"
 PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
 PAD_FUZZ="${MICROEMU_PAD_FUZZ:-/usr/libexec/microemu/microemu-pad-fuzz}"
 CONTAINER=lepton-microemu-play
+GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 MARKER="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/play-stop-requested"
 
 say() {
@@ -26,14 +28,25 @@ if [[ "${1:-}" != --body ]]; then
     [[ -x "${LEPTON}" ]] || refuse "${LEPTON} missing"
     [[ -n "${1:-}" && -f "$1" ]] || refuse "no such file: ${1:-}"
     case "$1" in
-        *.apk|*.APK) ;;
-        *) refuse "$1 is not an .apk" ;;
+        *.apk|*.APK|*.play|*.PLAY) ;;
+        *.update|*.UPDATE) exec "${UPDATE}" --no-block ;;
+        *) refuse "$1 is not an .apk, .play or .update entry" ;;
     esac
     real=$(realpath -e "$1")
     case "${real}" in
         "${HOME%/}/"*|"/run/media/${USER:-$(id -un)}/"*) ;;
         *) refuse "${real} is outside ${HOME} and /run/media/${USER:-$(id -un)}, the only paths the Android container sees" ;;
     esac
+    systemctl --user stop microemu-play-update.service >/dev/null 2>&1 || true
+    systemctl --user reset-failed microemu-play-update.service >/dev/null 2>&1 || true
+    if podman container exists lepton-headless-microemu-play 2>/dev/null; then
+        case "$(systemctl --user show -P ActiveState microemu-play-update.service 2>/dev/null)" in
+            inactive|failed|"")
+                podman rm -f lepton-headless-microemu-play >/dev/null 2>&1
+                say "removed a leftover lepton-headless-microemu-play"
+                ;;
+        esac
+    fi
     "${GAME_FREE}" || refuse "microemu-game.scope is still stopping"
     exec systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
         --property=BindsTo="${SESSION}" --property=After="${SESSION}" --property=TimeoutStopSec=5 \
@@ -58,7 +71,18 @@ finish() {
 trap finish EXIT
 trap 'signalled=1; exit 143' TERM INT HUP
 
-pkg=$("${SIDELOAD}" prepare "${rom}") || exit 1
+case "${rom}" in
+    *.play|*.PLAY)
+        kind=play
+        [[ -e "${GAPPS}/current" ]] || refuse "the Google Play layer is off, run microemu-gapps-install"
+        pkg=$(head -n 1 "${rom}" | tr -d '[:space:]')
+        [[ "${pkg}" =~ ^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$ ]] || refuse "${rom} does not hold a package name"
+        ;;
+    *)
+        kind=apk
+        pkg=$("${SIDELOAD}" prepare "${rom}") || exit 1
+        ;;
+esac
 
 systemctl --user is-active --quiet "${SESSION}" || refuse "${SESSION} is not active, refusing"
 rm -f "${MARKER}" "${MARKER%/*}/play-pkg" "${MARKER%/*}/play-activity"
@@ -86,18 +110,24 @@ else
     say "no InputPlumber xb360 pad node, starting without a pad"
 fi
 
-"${SIDELOAD}" install "${rom}" >/dev/null || exit 1
+launch=${pkg}
+if [[ "${kind}" == apk ]]; then
+    "${SIDELOAD}" install "${rom}" >/dev/null || exit 1
+elif [[ -z "$("${SIDELOAD}" installed "${pkg}")" ]]; then
+    say "${pkg} not installed, opening Google Play"
+    launch=com.android.vending
+fi
 
 component=$(podman exec "${CONTAINER}" /system/bin/cmd package resolve-activity --brief \
-    -c android.intent.category.LAUNCHER "${pkg}" 2>/dev/null | tail -n 1)
-[[ "${component}" == "${pkg}/"* ]] || refuse "${pkg} has no launcher activity"
+    -c android.intent.category.LAUNCHER "${launch}" 2>/dev/null | tail -n 1)
+[[ "${component}" == "${launch}/"* ]] || refuse "${launch} has no launcher activity"
 activity=${component#*/}
-[[ "${activity}" == .* ]] && activity="${pkg}${activity}"
-printf '%s\n' "${pkg}" > "${MARKER%/*}/play-pkg"
+[[ "${activity}" == .* ]] && activity="${launch}${activity}"
+printf '%s\n' "${launch}" > "${MARKER%/*}/play-pkg"
 printf '%s\n' "${activity}" > "${MARKER%/*}/play-activity"
 
 since=$(podman exec "${CONTAINER}" /system/bin/date +"%m-%d %H:%M:%S.000" 2>/dev/null)
-"${WATCH}" "${pkg}" "${activity}" "${since}" &
+"${WATCH}" "${launch}" "${activity}" "${since}" &
 watch_pid=$!
 
 podman exec "${CONTAINER}" /system/bin/am start -n "${component}" >/dev/null 2>&1 \

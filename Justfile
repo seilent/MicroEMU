@@ -50,6 +50,10 @@ test:
     bash tests/android-hook-test.sh
     bash tests/reset-test.sh
     bash tests/pad-fuzz-test.sh
+    bash tests/stub-test.sh
+    bash tests/gapps-install-test.sh
+    bash tests/play-update-test.sh
+    bash tests/sync-test.sh
     bash tests/guard-test.sh
     bash tests/paths-test.sh
 

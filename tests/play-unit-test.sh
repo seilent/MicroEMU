@@ -15,11 +15,15 @@ export STATE="${T}/state"
 export MICROEMU_LEPTON="${T}/bin/lepton"
 export MICROEMU_LEPTON_DIR_CMD="${T}/bin/lepton-dir"
 export MICROEMU_PAD_NODES="${T}/bin/pad-nodes"
+export MICROEMU_DISPLAY_FILE="${repo}/sysext/usr/share/microemu/android/display"
 export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
 export MICROEMU_ANDROID_DATA="${T}/data/android"
 export MICROEMU_PLAY_POLL_S=0.05
 export MICROEMU_STEAM_PIPE="${T}/steam.pipe"
+export MICROEMU_GAPPS="${T}/gapps"
+export MICROEMU_STUB_DIR="${T}/stub"
+export MICROEMU_ANDROID_SYNC="${T}/bin/sync"
 export MICROEMU_ANDROID_OPTS="${repo}/sysext/usr/share/microemu/android/opts"
 printf 'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\n' > "${T}/lepton/images/rootfs/vendor/odm/etc/build.prop"
 echo 3.0.5 > "${T}/lepton/version.txt"
@@ -58,11 +62,14 @@ STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
 echo "podman $*" >> "${STATE}/podman"
-case "$*" in
+args="$*"
+case "${args//lepton-headless-microemu-play/lepton-microemu-play}" in
     "container inspect -f {{.State.Running}} lepton-microemu-play") cat "${STATE}/running" ;;
     "exec lepton-microemu-play /system/bin/getprop sys.boot_completed") cat "${STATE}/booted" ;;
     "exec lepton-microemu-play /system/bin/pidof logd") echo 123 ;;
     "exec lepton-microemu-play /system/bin/logcat -b main -b system -b crash -v threadtime") cat "${STATE}/logcat" ;;
+    "exec lepton-microemu-play /system/bin/pm grant "*) [[ ! -e "${STATE}/grant_fail" ]] ;;
+    "exec lepton-microemu-play /system/bin/cmd_real package compile "*) ;;
     "exec lepton-microemu-play /system/bin/sh -c "*)
         echo opts >> "${STATE}/events"
         n=$(( $(ls "${STATE}" | grep -c '^opts-script') + 1 ))
@@ -84,9 +91,14 @@ case "$*" in
         ;;
     "inspect -f {{ index .Config.Labels \"PREFIX\" }} lepton-microemu-play") cat "${STATE}/prefix" ;;
     "stop -t 1 lepton-microemu-play"|"rm -fi lepton-microemu-play") ;;
+    "container exists "*) [[ "$3" == "$(cat "${STATE}/other" 2>/dev/null)" ]] && exit 0; exit "$(cat "${STATE}/other_rc" 2>/dev/null || echo 1)" ;;
     "unshare rm -rf "*) [[ ! -e "${STATE}/unshare-fail" ]] || exit 1; rm -rf "${3}" ;;
     *) echo "podman: unexpected $*" >&2; exit 99 ;;
 esac
+STUB
+cat > "${T}/bin/sync" <<'STUB'
+#!/usr/bin/bash
+echo "podman sync" >> "${STATE}/podman"
 STUB
 cat > "${T}/bin/pgrep" <<'STUB'
 #!/usr/bin/bash
@@ -153,7 +165,7 @@ out logcat after boot"
 grep -qx "starting" "${STATE}/stderr" || fail "boot output not in the journal"
 grep -q "logcat after boot" "${STATE}/stderr" && fail "post boot output reached the journal"
 [[ "$(cat "${MICROEMU_ANDROID_DATA}/lepton.log")" == $'logcat after boot\nmicroemu-play-run: lepton start exited with 3' ]] || fail "lepton.log: $(cat "${MICROEMU_ANDROID_DATA}/lepton.log")"
-[[ "$(cat "${MICROEMU_PLAY_CONTEXT}/microemu-stamp")" == "3.0.5 3.0.3" ]] || fail "stamp not written"
+[[ "$(cat "${MICROEMU_PLAY_CONTEXT}/microemu-stamp")" == "3.0.5 3.0.3 gapps=none" ]] || fail "stamp not written"
 [[ "$(cat "${MICROEMU_ANDROID_DATA}/boot.log")" == "I ActivityManager: start" ]] || fail "boot log: $(cat "${MICROEMU_ANDROID_DATA}/boot.log" 2>/dev/null)"
 grep -q "lepton start exited with 3" "${STATE}/stderr" || fail "exit not logged"
 opts="${MICROEMU_PLAY_CONTEXT}/microemu-opts"
@@ -218,6 +230,66 @@ reset "Boot complete!;sleep 0.2;exit 0"
 MICROEMU_ANDROID_OPTS="${T}/absent-opts" run
 grep -q "absent-opts missing, no guest settings applied" "${STATE}/stderr" || fail "opts missing: no log"
 grep -q "android ready" "${STATE}/stderr" || fail "opts missing: not ready"
+
+headless_xdg="${T}/xdg"
+mkdir -p "${headless_xdg}/microemu/headless"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${headless_xdg}/microemu/headless/gamescope-0"
+headless() { XDG_RUNTIME_DIR="${headless_xdg}" GAMESCOPE_WAYLAND_DISPLAY="${1-microemu/headless/gamescope-0}" "${run_script}" --headless 2> "${STATE}/stderr"; }
+
+reset "Boot complete!;sleep 0.3;exit 0"
+rm -f "${MICROEMU_PLAY_CONTEXT}/microemu-stamp" "${MICROEMU_PLAY_CONTEXT}/microemu-opts"
+rc=0
+headless || rc=$?
+grep -q "^podman exec lepton-headless-microemu-play /system/bin/sh -c" "${STATE}/podman" || fail "headless: guest settings not applied on its container"
+[[ "${rc}" == 0 ]] || fail "headless exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "GAMESCOPE_WAYLAND_DISPLAY=microemu/headless/gamescope-0" "${STATE}/env" || fail "headless: display not passed to lepton"
+grep -qx "ARMADA_EXT_WAYLAND_DISPLAY=" "${STATE}/env" || fail "headless: ARMADA_EXT_WAYLAND_DISPLAY not set empty"
+grep -q "/dev/input/" "${conf}" && fail "headless: pad nodes mounted: $(cat "${conf}")"
+grep -qx "lepton start headless-microemu-play" "${STATE}/events" || fail "headless: lepton not run as start headless-microemu-play: $(events)"
+grep -q "^notify" "${STATE}/events" && fail "headless: systemd-notify called: $(events)"
+grep -qx "STEAM_COMPAT_DATA_PATH=${MICROEMU_PLAY_CONTEXT}" "${STATE}/env" || fail "headless: not on the microemu-play context"
+grep -q "lepton-headless-microemu-play /system/bin/getprop sys.boot_completed" "${STATE}/podman" || fail "headless: boot not checked on its container: $(cat "${STATE}/podman")"
+grep -v "container exists" "${STATE}/podman" | grep -q " lepton-microemu-play" && fail "headless: lepton-microemu-play touched: $(cat "${STATE}/podman")"
+grep -q "android ready" "${STATE}/stderr" || fail "headless: not ready"
+[[ "$(cat "${MICROEMU_PLAY_CONTEXT}/microemu-stamp")" == "3.0.5 3.0.3 gapps=none" ]] || fail "headless: stamp not written"
+grep -qx "podman container exists lepton-microemu-play" "${STATE}/podman" || fail "headless: game container not checked"
+rc=0
+"${run_script}" --bogus 2>/dev/null || rc=$?
+[[ "${rc}" == 1 ]] || fail "unknown run option exit ${rc}"
+
+reset "Boot complete!;exit 0"
+printf 'width=960\nheight=640\n' > "${T}/display"
+MICROEMU_DISPLAY_FILE="${T}/display" run
+[[ "${rc}" == 1 ]] && grep -q "no density in ${T}/display" "${STATE}/stderr" || fail "display file without a density: exit ${rc}"
+reset "Boot complete!;exit 0"
+printf 'density=240\n' > "${T}/display"
+MICROEMU_DISPLAY_FILE="${T}/display" run
+grep -qx "ro.sf.lcd_density=240" "${odm}" || fail "density not taken from the display file: $(cat "${odm}")"
+
+for display in "" microemu/headless/missing-0 gamescope-0; do
+    reset "Boot complete!;exit 0"
+    rc=0
+    headless "${display}" || rc=$?
+    [[ "${rc}" == 1 ]] || fail "headless display '${display}': exit ${rc}"
+    grep -q "no headless display" "${STATE}/stderr" || fail "headless display '${display}': no reason: $(cat "${STATE}/stderr")"
+    grep -q "lepton start" "${STATE}/events" && fail "headless display '${display}': lepton started"
+done
+
+reset "Boot complete!;exit 0"
+echo lepton-headless-microemu-play > "${STATE}/other"
+run
+[[ "${rc}" == 1 ]] || fail "headless container present: exit ${rc}"
+[[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-start-failed")" == "container lepton-headless-microemu-play exists, refusing" ]] || fail "headless container present: no reason"
+grep -q "lepton start" "${STATE}/events" && fail "headless container present: lepton started"
+reset "Boot complete!;exit 0"
+echo lepton-microemu-play > "${STATE}/other"
+rc=0
+headless || rc=$?
+[[ "${rc}" == 1 ]] && grep -q "container lepton-microemu-play exists, refusing" "${STATE}/stderr" || fail "game container present: headless exit ${rc}"
+reset "Boot complete!;exit 0"
+echo 125 > "${STATE}/other_rc"
+run
+[[ "${rc}" == 1 ]] && grep -q "podman container exists failed (rc=125), refusing" "${STATE}/stderr" || fail "podman error: exit ${rc}"
 
 reset "Boot complete!;exit 0"
 run
@@ -302,6 +374,70 @@ took=$(( $(date +%s%3N) - start ))
 grep -q "no ${MICROEMU_STEAM_PIPE}, Steam links from Android are not read" "${STATE}/stderr" || fail "missing pipe not logged"
 (( took < 3000 )) || fail "missing pipe: took ${took} ms"
 
+gapps_tree() {
+    local set="${MICROEMU_GAPPS}/mtg11-20230922.vending-36.6.25" file
+    rm -rf "${MICROEMU_GAPPS}" "${MICROEMU_STUB_DIR}"
+    mkdir -p "${set}/system/product/priv-app/Phonesky" "${set}/system/system_ext/etc/permissions" "${MICROEMU_STUB_DIR}"
+    echo apk > "${set}/system/product/priv-app/Phonesky/Phonesky.apk"
+    echo xml > "${set}/system/system_ext/etc/permissions/privapp-permissions-google-se.xml"
+    {
+        echo "set=mtg11-20230922.vending-36.6.25"
+        for file in system/product/priv-app/Phonesky/Phonesky.apk system/system_ext/etc/permissions/privapp-permissions-google-se.xml; do
+            echo "$(sha256sum "${set}/${file}" | cut -d' ' -f1) $(stat -c %s "${set}/${file}") ${file}"
+        done
+    } > "${set}/STAMP"
+    ln -s mtg11-20230922.vending-36.6.25 "${MICROEMU_GAPPS}/current"
+    echo jar > "${MICROEMU_STUB_DIR}/microemu-restrictions-stub.jar"
+    echo rc > "${MICROEMU_STUB_DIR}/microemu-restrictions-stub.rc"
+}
+gset="${MICROEMU_GAPPS}/mtg11-20230922.vending-36.6.25"
+
+reset "Boot complete!;sleep 0.5;exit 0"
+gapps_tree
+rm -f "${MICROEMU_PLAY_CONTEXT}/microemu-stamp"
+run
+[[ "${rc}" == 0 ]] || fail "gapps on exit ${rc}: $(cat "${STATE}/stderr")"
+for mount in "type=bind,source=${gset}/system/product/priv-app/Phonesky/Phonesky.apk,destination=/system/product/priv-app/Phonesky/Phonesky.apk,ro" \
+    "type=bind,source=${gset}/system/system_ext/etc/permissions/privapp-permissions-google-se.xml,destination=/system/system_ext/etc/permissions/privapp-permissions-google-se.xml,ro" \
+    "type=bind,source=${MICROEMU_STUB_DIR}/microemu-restrictions-stub.jar,destination=/system/framework/microemu-restrictions-stub.jar,ro" \
+    "type=bind,source=${MICROEMU_STUB_DIR}/microemu-restrictions-stub.rc,destination=/system/etc/init/microemu-restrictions-stub.rc,ro"; do
+    grep -qF "\"${mount}\"" "${conf}" || fail "gapps mount missing: ${mount}"
+done
+for _ in $(seq 1 40); do grep -q "gapps=mtg11" "${MICROEMU_PLAY_CONTEXT}/microemu-stamp" 2>/dev/null && break; sleep 0.05; done
+grep -q "gapps=mtg11-20230922.vending-36.6.25" "${MICROEMU_PLAY_CONTEXT}/microemu-stamp" || fail "stamp lacks the gapps set"
+grep -q "pm grant com.google.android.gms android.permission.ACCESS_FINE_LOCATION" "${STATE}/podman" || fail "first boot grants missing"
+grep -q "cmd_real package compile" "${STATE}/podman" && fail "first boot compiles during a launch"
+
+reset "Boot complete!;sleep 0.3;exit 0"
+run
+grep -q "pm grant" "${STATE}/podman" && fail "grants repeated with an unchanged stamp"
+
+reset "Boot complete!;sleep 0.8;exit 0"
+gapps_tree
+rm -f "${MICROEMU_PLAY_CONTEXT}/microemu-stamp"
+: > "${STATE}/grant_fail"
+run
+grep -q "a grant failed, the stamp stays unchanged" "${STATE}/stderr" || fail "failed grant not logged: $(cat "${STATE}/stderr")"
+[[ ! -e "${MICROEMU_PLAY_CONTEXT}/microemu-stamp" ]] || fail "stamp written after a failed grant"
+
+for broken in current stamp file size jar rc; do
+    reset "exit 0"
+    gapps_tree
+    case "${broken}" in
+        current) rm "${MICROEMU_GAPPS}/current"; echo "3.0.5 3.0.3 gapps=mtg11-20230922.vending-36.6.25" > "${MICROEMU_PLAY_CONTEXT}/microemu-stamp" ;;
+        stamp) rm "${gset}/STAMP" ;;
+        file) chmod u+w "${gset}/system/product/priv-app/Phonesky"; rm "${gset}/system/product/priv-app/Phonesky/Phonesky.apk" ;;
+        size) echo longer >> "${gset}/system/product/priv-app/Phonesky/Phonesky.apk" ;;
+        jar) rm "${MICROEMU_STUB_DIR}/microemu-restrictions-stub.jar" ;;
+        rc) rm "${MICROEMU_STUB_DIR}/microemu-restrictions-stub.rc" ;;
+    esac
+    run
+    [[ "${rc}" == 1 ]] || fail "gapps ${broken} broken: exit ${rc}"
+    grep -q "gapps tree incomplete, run microemu-gapps-install" "${STATE}/stderr" || fail "gapps ${broken} broken: no refusal line"
+    grep -q "lepton start" "${STATE}/events" && fail "gapps ${broken} broken: container started"
+done
+rm -rf "${MICROEMU_GAPPS}" "${MICROEMU_STUB_DIR}" "${MICROEMU_PLAY_CONTEXT}/microemu-stamp"
+
 reset "Boot complete!;hold;exit 4"
 start=$(date +%s%3N)
 run
@@ -332,7 +468,7 @@ prefix_dir=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
 reset "exit 0"
 echo "${prefix_dir}" > "${STATE}/prefix"
 "${stop_script}" --post 2> "${STATE}/stderr"
-[[ "$(sed 's/^podman //' "${STATE}/podman")" == $'inspect -f {{ index .Config.Labels "PREFIX" }} lepton-microemu-play\nstop -t 1 lepton-microemu-play\nrm -fi lepton-microemu-play' ]] \
+[[ "$(sed 's/^podman //' "${STATE}/podman")" == $'inspect -f {{ index .Config.Labels "PREFIX" }} lepton-microemu-play\nstop -t 1 lepton-microemu-play\nrm -fi lepton-microemu-play\nsync' ]] \
     || fail "post calls: $(cat "${STATE}/podman")"
 [[ ! -e "${prefix_dir}" ]] || fail "post: lepton prefix left"
 reset "exit 0"
@@ -354,6 +490,14 @@ rm -rf "${stuck_dir}"
 grep -q "cannot remove ${stuck_dir}" "${STATE}/stderr" || fail "failed removal not logged: $(cat "${STATE}/stderr")"
 grep -q "removed the leftover" "${STATE}/stderr" && fail "failed removal logged as removed"
 reset "exit 0"
+: > "${STATE}/prefix"
+mkdir -p "${MICROEMU_RUNTIME_DIR}/headless"
+: > "${MICROEMU_RUNTIME_DIR}/headless/ready"
+"${stop_script}" --post --headless 2> "${STATE}/stderr"
+[[ ! -e "${MICROEMU_RUNTIME_DIR}/headless" ]] || fail "post headless: private gamescope dir left"
+[[ "$(sed 's/^podman //' "${STATE}/podman")" == $'inspect -f {{ index .Config.Labels "PREFIX" }} lepton-headless-microemu-play\nstop -t 1 lepton-headless-microemu-play\nrm -fi lepton-headless-microemu-play\nsync' ]] \
+    || fail "post headless calls: $(cat "${STATE}/podman")"
+reset "exit 0"
 "${stop_script}"
 [[ "$(cat "${STATE}/podman")" == "podman stop -t 1 lepton-microemu-play" ]] || fail "stop: $(cat "${STATE}/podman")"
 rc=0
@@ -368,6 +512,16 @@ for line in BindsTo=gamescope-session-plus@microemu.service Type=notify NotifyAc
     grep -qxF "${line}" "${unit}" || fail "unit lacks ${line}"
 done
 grep -q '^After=' "${unit}" && fail "unit is ordered after something"
+
+unit="${repo}/sysext/usr/lib/systemd/user/microemu-play-update.service"
+for line in Type=oneshot KillMode=mixed 'ExecStartPre=/usr/bin/podman rm -fi lepton-headless-microemu-play' \
+    'ExecStart=/usr/bin/microemu-play-update --body' 'ExecStopPost=/usr/libexec/microemu/microemu-play-stop --post --headless' \
+    TimeoutStartSec=31min TimeoutStopSec=10 SyslogIdentifier=microemu-play-update; do
+    grep -qxF "${line}" "${unit}" || fail "update unit lacks ${line}"
+done
+grep -qxF Conflicts=microemu-play.service "${unit}" || fail "update unit does not conflict with microemu-play.service"
+grep -qxF Before=microemu-play.service "${unit}" || fail "update unit not ordered against microemu-play.service"
+grep -qE '^(BindsTo|Requires|Wants)=' "${unit}" && fail "update unit pulls another unit"
 
 if (( failures )); then
     echo "play-unit-test: ${failures} failure(s)" >&2
