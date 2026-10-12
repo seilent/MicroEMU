@@ -2,10 +2,8 @@
 
 An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
 
-Status: the `microemu` gamescope session with ES-DE as its client, the LC hold and
-volume key daemon, RetroArch with 13 Fedora cores, Android `.apk` games and an optional Google Play layer through Lepton, the Art Book Next theme and
-the guard, written, not run on a device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
-(`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
+Status: runs on the AYANEO Pocket MICRO 2 (Armada `20261011.b995457`, 2026-10-13). Needs an Armada
+image with session drop-in support (`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
 
 ## Layout
 
@@ -91,7 +89,7 @@ systemd-run --user --scope --collect --expand-environment=no --unit=microemu-gam
     --appendconfig /usr/share/microemu/retroarch/microemu.cfg -L <core> <rom>
 ```
 
-ES-DE waits for it; its exit code is the game's. `microemu.cfg` is applied over the user config at every launch:
+ES-DE waits for it; its exit code is the game's. `microemu.cfg` is applied over `~/.config/microemu/retroarch/retroarch.cfg` at every launch:
 `menu_driver = "rgui"` (no assets), `video_fullscreen = "true"` (the 960x640 output; windowed, RetroArch sizes the
 window from `video_scale`), `desktop_menu_enable = "false"` (Fedora's build has Qt 6 and with it on builds the Qt
 desktop companion at every start, which crashed about 1 in 3 starts), `input_menu_toggle = "f15"` (RC), `autosave_interval = "10"`, online and core
@@ -147,7 +145,7 @@ Mix` palette, boot ROM when `gb_bios.bin` or `gbc_bios.bin` is in the system dir
 muted) for Gambatte, mGBA, Nestopia, Stella 2014, ProSystem, Handy, Beetle NeoPop, Beetle PCE Fast, Beetle VB, Beetle
 WonderSwan and Game & Watch, rewind only for bsnes-mercury (its save states are not deterministic, so RetroArch turns
 run ahead off); PCSX ReARMed gets none. RetroArch loads core presets from
-the shader dir's `presets/<core>/` after the user's own in the config dir: Gambatte LCD grid with pixel transparency,
+the shader dir's `presets/<core>/` after a preset of the same name in the config dir: Gambatte LCD grid with pixel transparency,
 mGBA LCD grid with SP101 color, Nestopia Retro Crisis GDV-NTSC `1080p Flat/RC GDV-NTSC - NES - Clean`, bsnes-mercury
 `1080p Flat/RC GDV-NTSC - SNES - Clean` (the presets the scripts' `nestopia_auto_config.sh` and `bsnes_auto_config.sh`
 reference). `crt-guest-advanced-fast`, `crt-guest-advanced-fastest` and the 4K Flat Clean presets ship too, for Quick
@@ -217,7 +215,7 @@ runs `microemu-play-run`, which writes `$XDG_RUNTIME_DIR/microemu/lepton/contain
 |---|---|
 | annotation | `run.oci.systemd.subgroup=app-steam-app1-1.scope`: gamescope takes the Android window's appid from the container's cgroup name, so it can take focus over ES-DE |
 | mounts | each `xb360` node at the same path, `rw`; `$XDG_RUNTIME_DIR/microemu/lepton/odm-build.prop` over `/vendor/odm/etc/build.prop`, `ro` |
-| odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density` from `/usr/share/microemu/android/display` (`density=213`: a portrait app's 426 px column is 320 dp) , `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off) and `pm.dexopt.install=speed` (installs and updates compile with `speed`) |
+| odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density` from `/usr/share/microemu/android/display` (`density=213`: a portrait app's 426 px column is 320 dp), `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off) and `pm.dexopt.install=speed` (installs and updates compile with `speed`) |
 | environment | `TERM=dumb`, `APP_WANTS_FLATSCREEN=true`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`, `STEAM_COMPAT_DATA_PATH` the context (shared storage kept in `external/`), `LEPTON_NO_CLEANUP=true`, `LEPTON_KEEP_CONTEXT=1`, no `SteamAppId` or `LD_LIBRARY_PATH`; `internal/` created first |
 
 Lepton's output before the boot goes to the journal, after it to `~/.local/share/microemu/android/lepton.log`. A
@@ -416,7 +414,7 @@ pinned, 219247637 bytes, cached in `build/cache/theme/`) and unpacks it to
 `/usr/share/licenses/microemu/art-book-next.txt`.
 
 `microemu-client` links every theme there into `~/.local/share/microemu/ES-DE/themes/`, replacing a link or file of the
-same name; a real directory of that name (the user's own copy) is kept and logged, other themes stay. It adds these
+same name; a real directory of that name (a copy put there by hand) is kept and logged, other themes stay. It adds these
 keys to `~/.local/share/microemu/ES-DE/settings/es_settings.xml` when they are missing, so later changes in ES-DE's
 menu stay:
 
@@ -462,7 +460,7 @@ lines instead of acting. Without `InputPlumber Keyboard` after 15 s the daemon e
 ## Guard
 
 `microemu-guard.service`, a user oneshot wanted by `default.target` (`default.target.d/50-microemu.conf`), runs at each
-login and after every dev loop. A user unit, because the user manager starts after `systemd-sysext.service` merged the
+login and after every dev loop. A user unit, because systemd's user manager starts after `systemd-sysext.service` merged the
 extension. On systemd 259 `systemd-sysext refresh` reloads the service manager only when a merged extension-release
 sets `EXTENSION_RELOAD_MANAGER=1`, so a system unit pulled in by a sysext `multi-user.target.d` drop-in would not load
 at that boot without the key. microemu ships no system unit that has to run at boot, so `extension-release.microemu` does
@@ -508,21 +506,21 @@ and `microemu-gapps-install` apply only with `MICROEMU_TEST=1`), `tests/guard-te
 
 `build/device-off`, as root (exits 1 otherwise):
 
-1. Reads the `ActiveState` of `gamescope-session-plus@microemu.service` for the user at once and then every second up
+1. Reads the `ActiveState` of `gamescope-session-plus@microemu.service` for the session account (`SUDO_USER`, else `armada`) at once and then every second up
    to 60 s. The first time it reads `active` or `activating`, it starts `armada-session-switch@gamemode.service` with
    `--no-block`.
 2. Goes on when the state is `inactive` or `failed`, or empty while `user@<uid>.service` is not active, and no
-   `/etc/sddm.conf.d/*.conf` has a `Session=microemu.desktop` line (whitespace and CR allowed). An empty state with the
-   user manager up is a failed query and counts as running. On timeout it exits 1 and changes nothing.
-3. Stops `microemu-hotkeyd.service`, `microemu-pad.service`, `microemu-guard.service` and `microemu-play-update.service` as the user.
-4. Removes `/var/lib/extensions/microemu`, `/var/lib/extensions/microemu.raw`, `/run/microemu` and the user's
+   `/etc/sddm.conf.d/*.conf` has a `Session=microemu.desktop` line (whitespace and CR allowed). An empty state with
+   systemd's user manager up is a failed query and counts as running. On timeout it exits 1 and changes nothing.
+3. Stops `microemu-hotkeyd.service`, `microemu-pad.service`, `microemu-guard.service` and `microemu-play-update.service` as the account.
+4. Removes `/var/lib/extensions/microemu`, `/var/lib/extensions/microemu.raw`, `/run/microemu` and the account's
    `$XDG_RUNTIME_DIR/microemu` only, then `systemd-sysext refresh`, `systemctl
-   daemon-reload` and `systemctl --user daemon-reload` as the user.
+   daemon-reload` and `systemctl --user daemon-reload` as the account.
 5. Stops and resets `microemu-hotkeyd.service` again (`Upholds=` from `default.target` starts it again after step 3
    while the unit is still merged) and resets `microemu-play-update.service`, which a stop leaves `failed`.
 6. `systemctl restart polkit`.
 
-Other extensions (microdap) stay merged. The user is `SUDO_USER`, else `armada`; user commands run through `runuser`
+Other extensions (microdap) stay merged. Commands for the account run through `runuser`
 with `XDG_RUNTIME_DIR` set.
 
 ## Rebuild per Armada release
@@ -536,7 +534,7 @@ matches.
 `systemd-sysext` merges an image only under the name in its `extension-release.<name>`, so the asset
 `microemu-<ver>-armada<VERSION_ID>-arm64.raw` goes to `/var/lib/extensions/microemu.raw`, or the `dist/` tree to
 `/var/lib/extensions/microemu/`, never both: remove the other form first (`just off` removes both; `device-apply`
-refuses a directory deploy beside `microemu.raw`). Then `systemd-sysext refresh`, `systemctl restart polkit` and, as the user, `systemctl --user daemon-reload`. Install and
+refuses a directory deploy beside `microemu.raw`). Then `systemd-sysext refresh`, `systemctl restart polkit` and, as `armada`, `systemctl --user daemon-reload`. Install and
 uninstall from game mode. Uninstall: `just off`, or
 the same steps as `build/device-off`.
 
