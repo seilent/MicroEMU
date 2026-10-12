@@ -1,0 +1,274 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+LEPTON="${MICROEMU_LEPTON:-/usr/share/steam/compatibilitytools.d/lepton-armada/lepton}"
+LEPTON_DIR_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton-dir}"
+PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
+RUN="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/lepton"
+DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+EXTEND_USEC="${MICROEMU_PLAY_EXTEND_USEC:-120000000}"
+POLL_S="${MICROEMU_PLAY_POLL_S:-0.5}"
+STEAM_PIPE="${MICROEMU_STEAM_PIPE:-${HOME}/.steam/steam.pipe}"
+OPTS="${MICROEMU_ANDROID_OPTS:-/usr/share/microemu/android/opts}"
+OPTS_TIMEOUT_S="${MICROEMU_ANDROID_OPTS_TIMEOUT_S:-30}"
+CONTAINER=lepton-microemu-play
+
+say() { printf 'microemu-play-run: %s\n' "$*" >&2; }
+
+fail() {
+    say "$*"
+    mkdir -p "${RUN%/*}" && printf '%s\n' "$*" > "${RUN%/*}/play-start-failed"
+    exit 1
+}
+
+container_running() {
+    [[ "$(podman container inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" == true ]]
+}
+
+boot_completed() {
+    [[ "$(podman exec "${CONTAINER}" /system/bin/getprop sys.boot_completed 2>/dev/null)" == 1 ]]
+}
+
+boot_log() {
+    until container_running && podman exec "${CONTAINER}" /system/bin/pidof logd >/dev/null 2>&1; do
+        sleep "${POLL_S}"
+    done
+    podman exec "${CONTAINER}" /system/bin/logcat -b main -b system -b crash -v threadtime 2>/dev/null \
+        | while IFS= read -r line; do
+            printf '%s\n' "${line}"
+            if [[ "${line}" == *"privapp-permissions whitelist"* && ! -e "${DATA}/privapp-log" ]]; then
+                printf '%s\n' "${line}" > "${DATA}/privapp-log"
+            fi
+        done >> "${DATA}/boot.log"
+}
+
+steam_pipe() {
+    while :; do
+        if [[ -p "${STEAM_PIPE}" ]] && ! pgrep -x steam >/dev/null 2>&1; then
+            python3 - "${STEAM_PIPE}" <<'PY'
+import os
+import select
+import stat
+import subprocess
+import sys
+
+path = sys.argv[1]
+
+
+def steam_running():
+    return subprocess.run(["pgrep", "-x", "steam"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+try:
+    fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+except OSError:
+    sys.exit(0)
+if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+    sys.exit(0)
+pending = b""
+while not steam_running():
+    try:
+        if not stat.S_ISFIFO(os.stat(path).st_mode) or os.stat(path).st_ino != os.fstat(fd).st_ino:
+            break
+    except OSError:
+        break
+    ready, _, _ = select.select([fd], [], [], 1)
+    if not ready:
+        continue
+    pending += os.read(fd, 65536)
+    while b"\n" in pending:
+        line, pending = pending.split(b"\n", 1)
+        if line:
+            print("microemu-play-run: android asked to open " + line.decode(errors="replace"), file=sys.stderr, flush=True)
+os.close(fd)
+PY
+        fi
+        sleep 1
+    done
+}
+
+quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+apply_opts() {
+    local kind id rest arg line script='' stamp_file="${CONTEXT}/microemu-opts" result applied=0 failed=0
+    local -a args
+    [[ -f "${OPTS}" ]] || { say "${OPTS} missing, no guest settings applied"; return 0; }
+    touch "${stamp_file}"
+    while read -r kind id rest; do
+        [[ -n "${kind}" ]] || continue
+        [[ "${id}" =~ ^[a-z0-9-]+$ ]] || { say "${OPTS}: bad id ${id}"; continue; }
+        case "${kind}" in
+            set|pkg) grep -qxF -- "${id}" "${stamp_file}" && continue ;;
+            unset) grep -qxF -- "${id}" "${stamp_file}" || continue ;;
+            *) say "${OPTS}: unknown kind ${kind}"; continue ;;
+        esac
+        read -ra args <<<"${rest}"
+        line="${kind:0:1} $(quote "${id}")"
+        for arg in "${args[@]}"; do
+            line+=" $(quote "${arg}")"
+        done
+        script+="${line}"$'\n'
+    done < "${OPTS}"
+    [[ -n "${script}" ]] || return 0
+    script='s() { i=$1; shift; if /system/bin/cmd_real "$@" >/dev/null 2>&1; then echo "ok $i"; else echo "fail $i"; fi; }
+u() { i=$1; shift; if /system/bin/cmd_real "$@" >/dev/null 2>&1; then echo "undone $i"; else echo "fail $i"; fi; }
+p() { if /system/bin/cmd_real package list packages "$2" 2>/dev/null | /system/bin/grep -qx "package:$2"; then s "$1" package disable-user --user 0 "$2"; else echo "absent $1"; fi; }
+'"${script}"
+    while read -r result id; do
+        [[ "${id}" =~ ^[a-z0-9-]+$ ]] || continue
+        case "${result}" in
+            exit)
+                [[ "${id}" == 124 ]] && say "guest settings timed out after ${OPTS_TIMEOUT_S} s, the next start retries the rest"
+                ;;
+            ok|absent)
+                printf '%s\n' "${id}" >> "${stamp_file}"
+                applied=$((applied + 1))
+                ;;
+            undone)
+                grep -vxF -- "${id}" "${stamp_file}" > "${stamp_file}.new"
+                mv "${stamp_file}.new" "${stamp_file}"
+                applied=$((applied + 1))
+                ;;
+            fail)
+                say "guest setting ${id} failed, the next start retries it"
+                failed=$((failed + 1))
+                ;;
+        esac
+    done < <(timeout "${OPTS_TIMEOUT_S}" podman exec "${CONTAINER}" /system/bin/sh -c "${script}" 2>/dev/null; echo "exit $?")
+    say "guest settings: ${applied} applied, ${failed} failed"
+}
+
+stop_boot_log() {
+    pkill -TERM -P "${boot_log_pid}" 2>/dev/null
+    kill "${boot_log_pid}" 2>/dev/null
+}
+
+stop_steam_pipe() {
+    [[ -n "${steam_pipe_pid}" ]] || return 0
+    pkill -TERM -P "${steam_pipe_pid}" 2>/dev/null
+    kill "${steam_pipe_pid}" 2>/dev/null
+}
+
+rm -f "${RUN%/*}/play-start-failed"
+[[ -x "${LEPTON}" ]] || fail "${LEPTON} missing"
+lepton_dir=$("${LEPTON_DIR_CMD}") || fail "Steam's Lepton is not installed"
+odm_source="${lepton_dir}/images/rootfs/vendor/odm/etc/build.prop"
+[[ -f "${odm_source}" ]] || fail "${odm_source} missing"
+
+mkdir -p "${RUN}" "${DATA}" "${CONTEXT}/internal"
+
+{
+    cat "${odm_source}"
+    echo ro.sf.lcd_density=213
+    echo qemu.hw.mainkeys=1
+    echo debug.mesa.tu.debug=noubwc
+    echo pm.dexopt.install=speed
+    if [[ -e "${DATA}/privapp-log" ]]; then
+        echo ro.control_privapp_permissions=log
+    fi
+} > "${RUN}/odm-build.prop"
+[[ ! -e "${DATA}/privapp-log" ]] || say "privapp log mode"
+
+mounts=()
+while IFS= read -r node; do
+    [[ -n "${node}" ]] || continue
+    mounts+=("\"type=bind,source=${node},destination=${node},rw\"")
+done < <("${PAD_NODES}")
+mounts+=("\"type=bind,source=${RUN}/odm-build.prop,destination=/vendor/odm/etc/build.prop,ro\"")
+{
+    echo "[containers]"
+    echo "annotations = [\"run.oci.systemd.subgroup=app-steam-app1-1.scope\"]"
+    echo "mounts = [$(IFS=,; echo "${mounts[*]}")]"
+} > "${RUN}/containers.conf"
+
+stamp="$(cat "${lepton_dir}/version.txt" 2>/dev/null) $(cat "${lepton_dir}/images/version.txt" 2>/dev/null)"
+if [[ "$(cat "${CONTEXT}/microemu-stamp" 2>/dev/null)" != "${stamp}" ]]; then
+    say "context stamp missing or changed, boot bound extended"
+    systemd-notify "EXTEND_TIMEOUT_USEC=${EXTEND_USEC}"
+fi
+
+unset SteamAppId LD_LIBRARY_PATH
+export TERM=dumb APP_WANTS_FLATSCREEN=true GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
+export STEAM_COMPAT_DATA_PATH="${CONTEXT}" LEPTON_NO_CLEANUP=true LEPTON_KEEP_CONTEXT=1
+export CONTAINERS_CONF_OVERRIDE="${RUN}/containers.conf"
+
+rm -f "${RUN}/lepton.out"
+mkfifo "${RUN}/lepton.out"
+: > "${DATA}/boot.log"
+boot_log &
+boot_log_pid=$!
+steam_pipe_pid=
+if [[ -p "${STEAM_PIPE}" ]]; then
+    steam_pipe &
+    steam_pipe_pid=$!
+else
+    say "no ${STEAM_PIPE}, Steam links from Android are not read"
+fi
+"${LEPTON}" start microemu-play > "${RUN}/lepton.out" 2>&1 &
+lepton_pid=$!
+exec 3< "${RUN}/lepton.out"
+rm -f "${RUN}/lepton.out"
+
+handle() {
+    local line=$1
+    if (( ready )); then
+        printf '%s\n' "${line}" >> "${DATA}/lepton.log"
+        return 0
+    fi
+    printf '%s\n' "${line}" >&2
+    [[ "${line}" == "Boot complete!" ]] || return 0
+    if container_running && boot_completed; then
+        ready=1
+        apply_opts
+        systemd-notify --ready
+        printf '%s\n' "${stamp}" > "${CONTEXT}/microemu-stamp"
+        stop_boot_log
+        say "android ready"
+    else
+        say "lepton printed Boot complete! but the container is not running or not booted"
+    fi
+}
+
+ready=0
+partial=
+: > "${DATA}/lepton.log"
+trap 'say "stop requested, waiting for lepton start"' TERM INT
+while :; do
+    read_rc=0
+    IFS= read -r -t 1 line <&3 || read_rc=$?
+    if (( read_rc == 0 )); then
+        handle "${partial}${line}"
+        partial=
+        continue
+    fi
+    if (( read_rc <= 128 )); then
+        [[ -z "${partial}${line}" ]] || handle "${partial}${line}"
+        break
+    fi
+    partial+=${line}
+    if ! kill -0 "${lepton_pid}" 2>/dev/null; then
+        while IFS= read -r -t 0.2 line <&3; do
+            handle "${partial}${line}"
+            partial=
+        done
+        [[ -z "${partial}${line}" ]] || handle "${partial}${line}"
+        break
+    fi
+done
+exec 3<&-
+
+rc=0
+while :; do
+    rc=0
+    wait "${lepton_pid}" || rc=$?
+    kill -0 "${lepton_pid}" 2>/dev/null || break
+done
+stop_boot_log
+stop_steam_pipe
+say "lepton start exited with ${rc}"
+printf 'microemu-play-run: lepton start exited with %s\n' "${rc}" >> "${DATA}/lepton.log"
+if (( ! ready )); then
+    fail "android exited during boot, see ${DATA}/boot.log"
+fi
+exit "${rc}"

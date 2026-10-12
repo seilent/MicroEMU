@@ -1,0 +1,42 @@
+#!/usr/bin/bash
+set -u
+
+RUN_DIR="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}"
+MARKER="${RUN_DIR}/play-stop-requested"
+CONTAINER=lepton-microemu-play
+
+state=$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)
+case "${state}" in
+    active|activating|reloading) ;;
+    *) exit 0 ;;
+esac
+
+if [[ "${state}" == active ]]; then
+    pkg=
+    activity=
+    [[ -f "${RUN_DIR}/play-pkg" ]] && read -r pkg < "${RUN_DIR}/play-pkg"
+    [[ -f "${RUN_DIR}/play-activity" ]] && read -r activity < "${RUN_DIR}/play-activity"
+    [[ "${activity}" =~ ^[A-Za-z0-9_$]+(\.[A-Za-z0-9_$]+)+$ ]] || activity=
+    since=$(timeout 1 podman exec "${CONTAINER}" /system/bin/date +"%m-%d %H:%M:%S.000" 2>/dev/null)
+    timeout 1 podman exec "${CONTAINER}" /system/bin/am start -W -a android.intent.action.MAIN \
+        -c android.intent.category.HOME >/dev/null 2>&1
+    valid=0
+    [[ "${pkg}" =~ ^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$ ]] && valid=1
+    if [[ -n "${since}" ]] && (( valid )); then
+        if [[ -n "${activity}" ]]; then
+            patterns=(-e ",${activity},")
+        else
+            patterns=(-e ",${pkg}." -e ",${pkg}/" -e ",${pkg},")
+        fi
+        grep -m1 -qF "${patterns[@]}" < <(timeout "${MICROEMU_STOP_WAIT_S:-1}" podman exec "${CONTAINER}" \
+            /system/bin/logcat -b events -v brief -T "${since}" -s wm_on_stop_called 2>/dev/null)
+    fi
+    if (( valid )); then
+        timeout 1 podman exec "${CONTAINER}" /system/bin/am force-stop "${pkg}" >/dev/null 2>&1
+    fi
+fi
+
+mkdir -p "${RUN_DIR}"
+: > "${MARKER}"
+systemctl --user stop --no-block microemu-play.service
+exit 0

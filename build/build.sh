@@ -24,6 +24,7 @@ ext_value() { sed -n "s/^$1=//p" sysext/usr/lib/extension-release.d/extension-re
 rm -rf "${dist}"
 mkdir -p "${share}"
 cp -a sysext/. "${dist}/"
+find "${dist}" \( -name __pycache__ -o -name '*.pyc' \) -prune -exec rm -rf {} +
 
 esde=$(bash build/esde.sh build/cache/es-de "${dist}")
 retroarch=$(bash build/retroarch.sh build/cache/retroarch "${dist}")

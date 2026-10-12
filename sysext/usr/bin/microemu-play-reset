@@ -1,0 +1,26 @@
+#!/usr/bin/bash
+set -u
+
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
+DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+
+fail() { echo "microemu-play-reset: $*" >&2; exit 1; }
+
+case "$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)" in
+    inactive|failed|"") ;;
+    *) fail "microemu-play.service is running, refusing" ;;
+esac
+rc=0
+podman container exists lepton-microemu-play 2>/dev/null || rc=$?
+case "${rc}" in
+    1) ;;
+    0) fail "container lepton-microemu-play exists, refusing" ;;
+    *) fail "podman container exists failed (rc=${rc}), refusing" ;;
+esac
+
+if [[ -d "${CONTEXT}" ]]; then
+    podman unshare chmod -R 700 "${CONTEXT}" || fail "cannot chmod ${CONTEXT}"
+    podman unshare rm -rf "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
+fi
+rm -rf "${DATA}/sideload" "${DATA}/prune"
+echo "microemu-play-reset: the next Android launch boots a fresh context and installs every .apk again"

@@ -3,15 +3,15 @@
 An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
 
 Status: the `microemu` gamescope session with ES-DE as its client, the LC hold and
-volume key daemon, RetroArch with 13 Fedora cores, the Art Book Next theme and the guard, written, not run on a
-device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
+volume key daemon, RetroArch with 13 Fedora cores, Android `.apk` games through Lepton, the Art Book Next theme and
+the guard, written, not run on a device. Targets the AYANEO Pocket MICRO 2. Needs an Armada image with session drop-in support
 (`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
 
 ## Layout
 
 | Path | Content |
 |---|---|
-| `sysext/` | Static overlay, copied into `dist/` as is. `/usr` only, nothing under `/etc`. |
+| `sysext/` | Static overlay, copied into `dist/` as is, without `__pycache__` or `*.pyc`. `/usr` only, nothing under `/etc`. |
 | `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, device scripts for the dev loop. |
 | `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host, `systems-test.sh` runs `xmllint`, `shaders-test.sh` runs `zip`, `unzip`, `curl` (file URLs) and `python3`. |
 
@@ -44,7 +44,7 @@ session-control through `/usr/lib/armada/sessions.d/microemu.conf` (`DESKTOP=mic
 | `microemu-client` | Runs `microemu-game-stop` to clear what a previous session left, links `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` to the shipped file (replacing a file, link or directory there) and removes `es_find_rules.xml` there, then runs ES-DE with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. When ES-DE exits and the unit is `deactivating`, it blocks in `sleep infinity`. Otherwise (ES-DE quit, crash or missing) it runs `systemctl start armada-session-switch@gamemode.service`, retries once after 2 s, then blocks in `sleep infinity`; after a second failure it exits 1. |
 | `microemu-leave session` | Inside the microemu session, `systemctl --no-block start armada-session-switch@gamemode.service`, then returns. Elsewhere a log line. |
 | `microemu-game-stop` | Runs every executable in `/usr/libexec/microemu/game-stop.d/` in name order within 5 s in total (each hook gets what is left, SIGKILL 1 s after its bound; one that would start after the 5 s is skipped; a failure is logged, the rest still run), then `systemctl --user reset-failed`, `stop`, `reset-failed` of `microemu-game.scope`. A game that outlives the scope stops through a hook there. |
-| `microemu-stop` | `ExecStop` of the session, bounded at 15 s (SIGKILL 2 s later): `microemu-game-stop`, then SIGTERM to the process whose `/proc/<pid>/exe` is `/usr/lib/microemu/es-de/usr/bin/es-de` and whose cgroup is the microemu session unit, every 500 ms up to 6 times or until it exits. |
+| `microemu-stop` | `ExecStop` of the session, bounded at 15 s (SIGKILL 2 s later): `microemu-game-stop`, then SIGTERM to the process whose `/proc/<pid>/exe` is `/usr/lib/microemu/es-de/usr/bin/es-de` and whose cgroup is the microemu session unit, every 500 ms up to 6 times or until it exits, then a blocking stop of `microemu-play.service` within what is left. |
 | `microemu-pad xb360` | Sets every InputPlumber composite device to `xb360` plus `keyboard`, logging each device set or failed. Run by `microemu-pad.service` (`BindsTo=` and `After=` the session, wanted through `20-microemu-pad.conf`). |
 | `30-microemu-stop.conf` | `ExecStop=-microemu-stop`, `ExecStopPost=-microemu-game-stop`, `TimeoutStopSec=25`, `TimeoutStopFailureMode=terminate`. |
 
@@ -173,6 +173,114 @@ extensions, platform and theme:
 | `virtualboy` | `mednafen_vb` |
 | `wonderswan`, `wonderswancolor` | `mednafen_wswan` |
 
+## Android
+
+The `androidgames` system lists `.apk` files under `~/ROMs/androidgames/` and runs `/usr/libexec/microemu/microemu-apk
+<apk>`. Every Android game runs in one persistent Lepton context, `microemu-play`
+(`~/.local/share/lepton/contexts/microemu-play`), through Steam's Lepton and Armada's `lepton-armada`. The container lives
+for one game: only a stopped container gives ES-DE focus back.
+
+`microemu-apk` exits 1 with a journal line outside the microemu session, when `lepton-armada` is missing, for a file that
+is not an `.apk`, or for one outside `$HOME` and `/run/media/$USER` (the only host paths `lepton-armada` mounts into the
+container); otherwise it runs `microemu-game-free` and runs itself in the `microemu-game` scope (`systemd-run
+--expand-environment=no`, as the RetroArch wrapper). There, with an EXIT trap that stops `microemu-play.service` (`--no-block` on a signal):
+
+1. `microemu-sideload prepare`: the package name, and OBB files (`obb/*.obb` beside the APK or `*.obb` in its directory)
+   copied to the context's `external/Android/obb/<pkg>/` when missing or changed.
+2. The session check again, then `systemctl --user start microemu-play.service`, which blocks until Android booted. A failed start whose `Result` is
+   `success` logs `android start canceled` (a stop during the boot, an LC hold); any other result logs `android failed
+   to start (<result>), see ~/.local/share/microemu/android/boot.log and journalctl --user -u microemu-play.service`, or
+   `android failed to start: <reason>` when `microemu-play-run` refused with a reason (it writes it to
+   `$XDG_RUNTIME_DIR/microemu/play-start-failed`); the unit is then `reset-failed`. Canceled means `Result` `success` and the marker
+   `$XDG_RUNTIME_DIR/microemu/play-stop-requested`, which the `50-android` hook, `microemu-stop` and `microemu-apk`'s trap
+   write before they stop the unit and `microemu-apk` clears before the start; `Result` `success` without it is a start
+   job refused before the unit ran: `android failed to start (start job failed: <ActiveState>/<SubState>)`.
+3. Fuzz 512 on `ABS_X`, `ABS_Y`, `ABS_RX`, `ABS_RY` of each InputPlumber `xb360` node (`Microsoft X-Box 360 pad`,
+   `045e:028e`; `microemu-pad-nodes`, `microemu-pad-fuzz`): the PM2's right stick jitters at rest and Android dispatches
+   every change. No node: `no InputPlumber xb360 pad node, starting without a pad`, touch only.
+4. `microemu-sideload install` (below).
+5. `microemu-apk-watch <pkg>` in the background, then `cmd package resolve-activity` for the launcher component and
+   `am start -n`. The watcher reads `logcat -b events` for `wm_set_resumed_activity` and `am_proc_died` from the
+   guest's current time, arms once `<pkg>` is resumed, and ends the game on the launcher resuming once armed (B on the
+   game's root activity, after waiting up to 1 s for its `wm_on_stop_called` so it can save), the process dying, or the stream
+   ending: `<pkg> launcher|died|eof, ending the game`, `am force-stop`.
+6. The trap's blocking stop of `microemu-play.service`; ES-DE has focus again.
+
+`microemu-play.service` (`BindsTo=` the session, no `After=`, `Type=notify`, `TimeoutStartSec=60`, `TimeoutStopSec=10`)
+runs `microemu-play-run`, which writes `$XDG_RUNTIME_DIR/microemu/lepton/containers.conf` (passed as
+`CONTAINERS_CONF_OVERRIDE`) and runs `lepton-armada start microemu-play` as a child:
+
+| Setting | Value |
+|---|---|
+| annotation | `run.oci.systemd.subgroup=app-steam-app1-1.scope`: gamescope takes the Android window's appid from the container's cgroup name, so it can take focus over ES-DE |
+| mounts | each `xb360` node at the same path, `rw`; `$XDG_RUNTIME_DIR/microemu/lepton/odm-build.prop` over `/vendor/odm/etc/build.prop`, `ro` |
+| odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density=213` (a portrait app's 426 px column is 320 dp) , `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off) and `pm.dexopt.install=speed` (installs and updates compile with `speed`) |
+| environment | `TERM=dumb`, `APP_WANTS_FLATSCREEN=true`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`, `STEAM_COMPAT_DATA_PATH` the context (shared storage kept in `external/`), `LEPTON_NO_CLEANUP=true`, `LEPTON_KEEP_CONTEXT=1`, no `SteamAppId` or `LD_LIBRARY_PATH`; `internal/` created first |
+
+Lepton's output before the boot goes to the journal, after it to `~/.local/share/microemu/android/lepton.log`. A
+`logcat -b main -b system -b crash` stream from the moment `logd` runs goes to `boot.log`, emptied at each start.
+While no `steam` process runs, a reader on `~/.steam/steam.pipe` logs each line Android writes there (`android asked to
+open <uri>`), so a writer never blocks. It opens the path only while it is a FIFO and without creating it, and stops
+when the FIFO is replaced or removed; with no such FIFO it is skipped. `lepton start exited with <rc>` goes to the
+journal and `lepton.log`; a stop request makes `microemu-play-run` wait for Lepton instead of dying first, and the read
+loop ends once Lepton is gone even when a descendant still holds its output open. Ready is Lepton's `Boot
+complete!` line with the container running and `sys.boot_completed` 1 (Lepton prints the line also when the container
+died); Lepton exiting before that is `android exited during boot, see .../boot.log` and exit 1. A missing or
+changed `microemu-stamp` (Lepton and image versions) extends the start timeout to 120 s. A
+`privapp-permissions whitelist` line in the boot log writes `privapp-log`; while that file exists the odm build.prop gets
+`ro.control_privapp_permissions=log` and the journal says `privapp log mode`. `microemu-play-stop` runs `podman stop -t 1
+lepton-microemu-play` (the container ignores SIGTERM and is killed after 1 s; ES-DE has focus about 1.7 s after the
+stop, the context intact); `SuccessExitStatus=137` keeps a container killed from outside (an OOM kill included) from failing the unit; `--post`, after every stop, also `podman rm -fi` and removes Lepton's leftover
+`/tmp/lepton-context.*` prefix.
+
+Before it reports ready, `microemu-play-run` applies the guest settings in `/usr/share/microemu/android/opts` that the
+context has not had yet, in one `podman exec` (at most 30 s, `guest settings timed out`, the rest retried at the next
+start), through `cmd_real`. They come from BruhMeh's
+[Ayaneo-Handheld-Scripts](https://github.com/BruhMeh/Ayaneo-Handheld-Scripts) `First_Run_Optimizations.sh` at `168d1c9`:
+`wifi_scan_always_enabled` and `ble_scan_always_enabled` 0, `send_action_app_error` 0, `ota_disable_automatic_update`
+1, `alarm_manager_constants` `allow_while_idle_short_time=10000,allow_while_idle_long_time=20000`,
+`captive_portal_mode` 0 (the script has 2), and `disable-user` for `com.android.printspooler`, `com.android.bips`,
+`com.android.dreams.phototable`, `com.android.managedprovisioning` and `com.android.stk` when the package exists
+(Lepton's image has none of them, so they are recorded absent). Each
+line has an id; `microemu-opts` in the context holds the ids done (or absent), a failed one is logged and retried at the
+next start, and an `unset <id>` line runs its undo command once for an id that was applied. Left out of the script:
+the background restrictions on GMS and Play (`RUN_IN_BACKGROUND`, the restricted standby bucket, the GMS appops), so
+Play Services keep updating; Gboard, `com.ayaneo.update`, the Google apps and `com.qti.pasrservice`, which are not
+installed; `sm fstrim` (`/data` is a host directory); `pm trim-caches` (game caches); `use_freezer` (the
+guest's cgroup2 is mounted read only, so nothing can be frozen) and `sys.use_fifo_ui` (the guest's realtime priority
+limit is 0). These have no
+effect on Android 11 and are left out: `sensor_privacy`, `send_security_reports`,
+`master_sync_allow_background_in_battery_saver`, `job_scheduler_quota_controller_max_job_count_bg` and
+`dalvik.vm.dex2oat-filter`.
+
+Sideloads (`microemu-sideload install`), with per package state in `~/.local/share/microemu/android/sideload/<pkg>`:
+
+- Package name and version code from Lepton's `apk-info-extractor`, cached by path, size and mtime.
+- Installed with `cmd_real package install -r -g` (a split set, `base.apk` with `.armada-apks`, as an install session),
+  then `appops set <pkg> MANAGE_EXTERNAL_STORAGE allow` and a `speed` compile. Reinstalled when the sha256 of
+  its files changes, data kept.
+- Refused: an older version code than installed, a package installed from Play (`installer` in `packages.xml`, or
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`), a bad split list.
+- A package whose file is gone is marked `stale`, never uninstalled; a file moved with the same content only updates
+  the path. Nothing is marked when `~/ROMs/androidgames` is missing, empty or a link to an absent target.
+  `microemu-android-prune [<pkg>...]` queues stale packages; the next `.apk` launch uninstalls the ones still stale, and
+  keeps a failed uninstall queued with its state.
+
+`microemu-play-reset` removes the context and the sideload state (refused while the unit runs, the container exists, or
+`podman container exists` fails); the next
+launch boots a fresh context and installs every `.apk` again.
+
+An LC hold while `microemu-play.service` is active, booting or stopping runs `microemu-game-stop`. Its `50-android` hook,
+while the unit is active, starts the home activity (`am start -W -a android.intent.action.MAIN -c
+android.intent.category.HOME`; `input keyevent KEYCODE_HOME` does nothing in Lepton's guest), waits up to 1 s for
+the game's `wm_on_stop_called` event so it can save (the line names the activity class: it must equal the game's launcher activity from
+`$XDG_RUNTIME_DIR/microemu/play-activity`, else, with no activity known, a class in the game's package; Launcher3's
+own stop never counts), then force-stops the launched package (`$XDG_RUNTIME_DIR/microemu/play-pkg`, written by `microemu-apk`), then starts a
+`--no-block` stop of the unit; during the boot it only stops the unit. Each guest command is bounded at 1 s.
+`microemu-stop` stops the game, then ES-DE, then waits for the unit with what is left of its 15 s. B on the game's root
+activity reaches ES-DE about 2.6 to 3 s after the press (the watcher about 0.9 s plus up to 1 s waiting for the
+game's onStop, measured 0.3 s; the container stop about 1.7 s).
+
 ## Theme
 
 [Art Book Next (ES-DE Edition)](https://github.com/anthonycaccese/art-book-next-es-de) by Anthony Caccese, at
@@ -205,7 +313,7 @@ with non grabbing `evtest`. A hold is 1000 ms, timed from the press event; a rel
 |---|---|
 | game mode | buzz, `systemctl --no-block start armada-session-switch@microemu.service` |
 | game mode, a title running (`SteamLaunch AppId=`) | first hold logged; a second within 3 s switches |
-| microemu, `microemu-game.scope` active | buzz, `microemu-game-stop` in the background; holds while it runs are dropped |
+| microemu, `microemu-game.scope` active, or `microemu-play.service` active, booting or stopping | buzz, `microemu-game-stop` in the background; holds while it runs are dropped |
 | microemu | buzz, `microemu-leave session` |
 | microdap | logged, ignored |
 | Plasma (`plasmashell` running) | buzz, switch to microemu |
@@ -261,7 +369,8 @@ arm64, or with an arm64 binfmt registered with the `F` flag (without it, mount t
 | `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload` and a restart of `microemu-hotkeyd.service` and `microemu-guard.service`. |
 | `just test-paths` | `tests/paths-test.sh` against microdap's `dist/`: fails on any path both ship. |
 | `just off` | Copies `build/device-off` to `/var/tmp/microemu-off` and runs it as root on the device. |
-| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`, `tests/theme-test.sh`, `tests/guard-test.sh`, `tests/paths-test.sh` (prints `skip` without `MICROEMU_OTHER_DIST`). |
+| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`, `tests/theme-test.sh`, `tests/play-unit-test.sh`, `tests/apk-test.sh`,
+`tests/sideload-test.sh`, `tests/android-hook-test.sh`, `tests/reset-test.sh`, `tests/pad-fuzz-test.sh`, `tests/guard-test.sh`, `tests/paths-test.sh` (prints `skip` without `MICROEMU_OTHER_DIST`). |
 
 `MICROEMU_DEVICE` overrides `armada@pm2`. Root steps run through `ssh -t` and `sudo`.
 

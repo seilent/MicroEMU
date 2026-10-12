@@ -5,6 +5,7 @@ PROC_DIR="${MICROEMU_PROC_DIR:-/proc}"
 ESDE_BIN="${MICROEMU_ESDE_BIN:-/usr/lib/microemu/es-de/usr/bin/es-de}"
 TERM_TRIES="${MICROEMU_STOP_TERM_TRIES:-6}"
 GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+MARKER="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/play-stop-requested"
 
 if [[ "${1:-}" != --body ]]; then
     exec timeout -k 2 "${MICROEMU_STOP_BOUND_S:-15}" "$0" --body
@@ -24,10 +25,14 @@ esde_pid() {
 
 "${GAME_STOP}"
 
-pid=$(esde_pid) || exit 0
-for ((i = 0; i < TERM_TRIES; i++)); do
-    kill -TERM "${pid}" 2>/dev/null || break
-    sleep 0.5
-    kill -0 "${pid}" 2>/dev/null || break
-done
+if pid=$(esde_pid); then
+    for ((i = 0; i < TERM_TRIES; i++)); do
+        kill -TERM "${pid}" 2>/dev/null || break
+        sleep 0.5
+        kill -0 "${pid}" 2>/dev/null || break
+    done
+fi
+
+mkdir -p "$(dirname "${MARKER}")" && : > "${MARKER}"
+systemctl --user stop microemu-play.service >/dev/null 2>&1
 exit 0

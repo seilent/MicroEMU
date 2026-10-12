@@ -1,0 +1,14 @@
+[Unit]
+Description=MicroEMU Android container
+BindsTo=gamescope-session-plus@microemu.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStartPre=/usr/bin/podman rm -fi lepton-microemu-play
+ExecStart=/usr/libexec/microemu/microemu-play-run
+ExecStop=/usr/libexec/microemu/microemu-play-stop
+ExecStopPost=/usr/libexec/microemu/microemu-play-stop --post
+TimeoutStartSec=60
+TimeoutStopSec=10
+SuccessExitStatus=137

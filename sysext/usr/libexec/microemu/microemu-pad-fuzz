@@ -1,0 +1,38 @@
+#!/usr/bin/python3
+import fcntl
+import os
+import struct
+import sys
+
+ABS_AXES = (0x00, 0x01, 0x03, 0x04)
+FUZZ = int(os.environ.get("MICROEMU_PAD_FUZZ", "512"))
+ABSINFO = struct.Struct("6i")
+
+
+def ioc(direction, nr, size):
+    return (direction << 30) | (size << 16) | (ord("E") << 8) | nr
+
+
+def set_fuzz(node):
+    with open(node, "rb", buffering=0) as dev:
+        for axis in ABS_AXES:
+            buf = bytearray(ABSINFO.size)
+            fcntl.ioctl(dev, ioc(2, 0x40 + axis, ABSINFO.size), buf)
+            info = list(ABSINFO.unpack(buf))
+            info[3] = FUZZ
+            fcntl.ioctl(dev, ioc(1, 0xC0 + axis, ABSINFO.size), ABSINFO.pack(*info))
+
+
+def main(nodes):
+    status = 0
+    for node in nodes:
+        try:
+            set_fuzz(node)
+        except OSError as error:
+            print(f"microemu-pad-fuzz: {node}: {error}", file=sys.stderr)
+            status = 1
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

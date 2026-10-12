@@ -38,7 +38,11 @@ grep -qx 'Exec=gamescope-session-plus microemu' "${sysext}/usr/share/wayland-ses
 
 for file in "${units}"/*.service "${units}"/*.d/*.conf; do
     for exe in $(grep -oE '^Exec[A-Za-z]*=-?/[^ ]+' "${file}" | sed -E 's/^[^=]+=-?//'); do
-        [[ -x "${sysext}${exe}" ]] || fail "$(basename "${file}"): ${exe} not shipped"
+        case "${exe}" in
+            /usr/libexec/microemu/*) [[ -x "${sysext}${exe}" ]] || fail "$(basename "${file}"): ${exe} not shipped" ;;
+            /usr/bin/podman) ;;
+            *) fail "$(basename "${file}"): ${exe} is neither microemu's nor in the allowed image list" ;;
+        esac
     done
 done
 grep -qx 'Wants=microemu-pad.service' "${units}/gamescope-session-plus@microemu.service.d/20-microemu-pad.conf" || fail "session does not want microemu-pad"

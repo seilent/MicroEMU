@@ -2,6 +2,15 @@
 <loadExclusive/>
 <systemList>
     <system>
+        <name>androidgames</name>
+        <fullname>Android Games</fullname>
+        <path>%ROMPATH%/androidgames</path>
+        <extension>.apk .APK</extension>
+        <command label="Lepton">/usr/libexec/microemu/microemu-apk %ROM%</command>
+        <platform>android</platform>
+        <theme>androidgames</theme>
+    </system>
+    <system>
         <name>atari2600</name>
         <fullname>Atari 2600</fullname>
         <path>%ROMPATH%/atari2600</path>

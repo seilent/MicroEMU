@@ -49,8 +49,13 @@ kept() {
 }
 
 reset
+mkdir -p "${work}/sysext/usr/libexec/microemu/__pycache__"
+: > "${work}/sysext/usr/libexec/microemu/__pycache__/microemu-pad-fuzz.cpython-314.pyc"
+: > "${work}/sysext/usr/libexec/microemu/stray.pyc"
 run
 [[ "${rc}" == 0 ]] || fail "matching exit ${rc}: ${err}"
+[[ -z "$(find "${work}/dist" \( -name __pycache__ -o -name '*.pyc' \))" ]] || fail "matching: bytecode shipped"
+grep -q 'pyc\|__pycache__' "${work}/dist/usr/share/microemu/paths" && fail "matching: bytecode in the paths list"
 [[ ! -e "${work}/dist/old" ]] || fail "matching: old dist kept"
 [[ -f "${work}/dist/usr/lib/extension-release.d/extension-release.microemu" ]] || fail "matching: extension-release missing"
 grep -qx "MICROEMU_VERSION=test" "${work}/dist/usr/share/microemu/build-manifest" || fail "matching: no version in the manifest"

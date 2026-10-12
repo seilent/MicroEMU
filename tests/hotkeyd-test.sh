@@ -53,6 +53,7 @@ case "$*" in
     "--user is-active --quiet gamescope-session-plus@steam.service") [[ "$(cat "${STATE}/session")" == game ]] ;;
     "--user is-active --quiet gamescope-session-plus@microdap.service") [[ "$(cat "${STATE}/session")" == microdap ]] ;;
     "--user is-active --quiet microemu-game.scope") [[ -e "${STATE}/game" ]] ;;
+    "--user show -P ActiveState microemu-play.service") cat "${STATE}/play" 2>/dev/null || echo inactive ;;
     *) echo "systemctl $*" >> "${STATE}/calls" ;;
 esac
 EOF
@@ -144,6 +145,7 @@ run_case() {
     echo "${WPCTL_SLEEP:-0}" > "${STATE}/wpctl-sleep"
     echo "${STOP_SLEEP:-0}" > "${STATE}/stop-sleep"
     [[ -z "${GAME:-}" ]] || : > "${STATE}/game"
+    [[ -z "${PLAY:-}" ]] || echo "${PLAY}" > "${STATE}/play"
     [[ -z "${LOCKED:-}" ]] || : > "${STATE}/lock-held"
     [[ -z "${FLOCK_ERROR:-}" ]] || : > "${STATE}/flock-error"
     [[ -z "$3" ]] || printf '%s\n' "$3" | tr ';' '\n' > "${STATE}/script-event0"
@@ -244,6 +246,21 @@ GAME=1 STOP_SLEEP=0.6 run_case "game stop runs in the background" microemu "pres
 
 GAME=1 STOP_SLEEP=0.3 run_case "hold after a game stop leaves" microemu "press;sleep 0.3;release;sleep 0.6;press;sleep 0.4;release"
 expect_call_count "microemu-game-stop start" 1
+expect_call "${leave}"
+
+PLAY=active STOP_SLEEP=0.2 run_case "hold in microemu with android running" microemu "press;sleep 0.4;release;sleep 0.4"
+expect_call "microemu-game-stop start"
+expect_call_count "${leave}" 0
+
+PLAY=activating STOP_SLEEP=0.2 run_case "hold in microemu during the android boot" microemu "press;sleep 0.4;release;sleep 0.4"
+expect_call "microemu-game-stop start"
+expect_call_count "${leave}" 0
+
+PLAY=deactivating STOP_SLEEP=0.2 run_case "hold in microemu while android stops" microemu "press;sleep 0.4;release;sleep 0.4"
+expect_call "microemu-game-stop start"
+expect_call_count "${leave}" 0
+
+PLAY=failed run_case "hold in microemu with android failed" microemu "press;sleep 0.4;release"
 expect_call "${leave}"
 
 run_case "hold in microdap" microdap "press;sleep 0.4;release"

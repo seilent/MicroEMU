@@ -132,7 +132,13 @@ title_running() { pgrep -f 'SteamLaunch AppId=' >/dev/null 2>&1; }
 
 plasma_running() { pgrep -x plasmashell >/dev/null 2>&1; }
 
-game_running() { systemctl --user is-active --quiet microemu-game.scope; }
+game_running() {
+    systemctl --user is-active --quiet microemu-game.scope && return 0
+    case "$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)" in
+        active|activating|reloading|deactivating) return 0 ;;
+    esac
+    return 1
+}
 
 lock_held() {
     local rc=0

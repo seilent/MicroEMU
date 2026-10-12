@@ -1,0 +1,27 @@
+#!/usr/bin/bash
+set -u
+
+DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+STATES="${DATA}/sideload"
+QUEUE="${DATA}/prune"
+
+stale=()
+for state in "${STATES}"/*; do
+    [[ -f "${state}" ]] && grep -qx stale "${state}" || continue
+    pkg=${state##*/}
+    if (( $# )) && ! printf '%s\n' "$@" | grep -qxF "${pkg}"; then
+        continue
+    fi
+    stale+=("${pkg}")
+    printf '%s %s\n' "${pkg}" "$(sed -n 's/^path=//p' "${state}")"
+done
+
+if (( ! ${#stale[@]} )); then
+    echo "microemu-android-prune: no stale package"
+    exit 0
+fi
+mkdir -p "${DATA}"
+touch "${QUEUE}"
+printf '%s\n' "${stale[@]}" | sort -u - "${QUEUE}" > "${QUEUE}.tmp"
+mv "${QUEUE}.tmp" "${QUEUE}"
+echo "microemu-android-prune: ${#stale[@]} package(s) queued, uninstalled at the next Android launch of an .apk"

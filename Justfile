@@ -44,6 +44,12 @@ test:
     bash tests/retroarch-build-test.sh
     bash tests/shaders-test.sh
     bash tests/theme-test.sh
+    bash tests/play-unit-test.sh
+    bash tests/apk-test.sh
+    bash tests/sideload-test.sh
+    bash tests/android-hook-test.sh
+    bash tests/reset-test.sh
+    bash tests/pad-fuzz-test.sh
     bash tests/guard-test.sh
     bash tests/paths-test.sh
 

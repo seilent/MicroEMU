@@ -1,0 +1,108 @@
+#!/usr/bin/bash
+set -u
+
+SESSION=gamescope-session-plus@microemu.service
+LEPTON="${MICROEMU_LEPTON:-/usr/share/steam/compatibilitytools.d/lepton-armada/lepton}"
+SIDELOAD="${MICROEMU_SIDELOAD:-/usr/libexec/microemu/microemu-sideload}"
+WATCH="${MICROEMU_APK_WATCH:-/usr/libexec/microemu/microemu-apk-watch}"
+GAME_FREE="${MICROEMU_GAME_FREE:-/usr/libexec/microemu/microemu-game-free}"
+PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
+PAD_FUZZ="${MICROEMU_PAD_FUZZ:-/usr/libexec/microemu/microemu-pad-fuzz}"
+CONTAINER=lepton-microemu-play
+MARKER="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/play-stop-requested"
+
+say() {
+    logger -t microemu-apk -- "$*" 2>/dev/null || true
+    printf 'microemu-apk: %s\n' "$*" >&2
+}
+
+refuse() {
+    say "$*"
+    exit 1
+}
+
+if [[ "${1:-}" != --body ]]; then
+    systemctl --user is-active --quiet "${SESSION}" || refuse "${SESSION} is not active, refusing"
+    [[ -x "${LEPTON}" ]] || refuse "${LEPTON} missing"
+    [[ -n "${1:-}" && -f "$1" ]] || refuse "no such file: ${1:-}"
+    case "$1" in
+        *.apk|*.APK) ;;
+        *) refuse "$1 is not an .apk" ;;
+    esac
+    real=$(realpath -e "$1")
+    case "${real}" in
+        "${HOME%/}/"*|"/run/media/${USER:-$(id -un)}/"*) ;;
+        *) refuse "${real} is outside ${HOME} and /run/media/${USER:-$(id -un)}, the only paths the Android container sees" ;;
+    esac
+    "${GAME_FREE}" || refuse "microemu-game.scope is still stopping"
+    exec systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
+        --property=BindsTo="${SESSION}" --property=After="${SESSION}" --property=TimeoutStopSec=5 \
+        -- "$0" --body "$1"
+fi
+
+rom=$2
+signalled=0
+watch_pid=
+mkdir -p "${MARKER%/*}"
+
+finish() {
+    trap '' TERM INT HUP
+    [[ -z "${watch_pid}" ]] || kill "${watch_pid}" 2>/dev/null
+    : > "${MARKER}" 2>/dev/null
+    if (( signalled )); then
+        systemctl --user stop --no-block microemu-play.service
+    else
+        systemctl --user stop microemu-play.service
+    fi
+}
+trap finish EXIT
+trap 'signalled=1; exit 143' TERM INT HUP
+
+pkg=$("${SIDELOAD}" prepare "${rom}") || exit 1
+
+systemctl --user is-active --quiet "${SESSION}" || refuse "${SESSION} is not active, refusing"
+rm -f "${MARKER}" "${MARKER%/*}/play-pkg" "${MARKER%/*}/play-activity"
+rm -f "${MARKER%/*}/play-start-failed"
+if ! systemctl --user start microemu-play.service; then
+    result=$(systemctl --user show -P Result microemu-play.service)
+    state="$(systemctl --user show -P ActiveState microemu-play.service)/$(systemctl --user show -P SubState microemu-play.service)"
+    reason=
+    [[ -f "${MARKER%/*}/play-start-failed" ]] && read -r reason < "${MARKER%/*}/play-start-failed"
+    systemctl --user reset-failed microemu-play.service >/dev/null 2>&1
+    if [[ "${result}" == success && -e "${MARKER}" ]]; then
+        refuse "android start canceled"
+    elif [[ -n "${reason}" ]]; then
+        refuse "android failed to start: ${reason}"
+    elif [[ "${result}" == success ]]; then
+        refuse "android failed to start (start job failed: ${state})"
+    fi
+    refuse "android failed to start (${result}), see ~/.local/share/microemu/android/boot.log and journalctl --user -u microemu-play.service"
+fi
+
+mapfile -t nodes < <("${PAD_NODES}")
+if (( ${#nodes[@]} )); then
+    "${PAD_FUZZ}" "${nodes[@]}" || say "pad fuzz failed on ${nodes[*]}"
+else
+    say "no InputPlumber xb360 pad node, starting without a pad"
+fi
+
+"${SIDELOAD}" install "${rom}" >/dev/null || exit 1
+
+component=$(podman exec "${CONTAINER}" /system/bin/cmd package resolve-activity --brief \
+    -c android.intent.category.LAUNCHER "${pkg}" 2>/dev/null | tail -n 1)
+[[ "${component}" == "${pkg}/"* ]] || refuse "${pkg} has no launcher activity"
+activity=${component#*/}
+[[ "${activity}" == .* ]] && activity="${pkg}${activity}"
+printf '%s\n' "${pkg}" > "${MARKER%/*}/play-pkg"
+printf '%s\n' "${activity}" > "${MARKER%/*}/play-activity"
+
+since=$(podman exec "${CONTAINER}" /system/bin/date +"%m-%d %H:%M:%S.000" 2>/dev/null)
+"${WATCH}" "${pkg}" "${activity}" "${since}" &
+watch_pid=$!
+
+podman exec "${CONTAINER}" /system/bin/am start -n "${component}" >/dev/null 2>&1 \
+    || refuse "am start -n ${component} failed"
+
+wait "${watch_pid}"
+watch_pid=
+exit 0
