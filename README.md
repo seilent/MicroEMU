@@ -31,7 +31,7 @@ ES-DE comes from MicroOS's own `es-de` package, RetroArch and the 13 cores from 
 | `/usr/share/wayland-sessions/microemu.desktop` | `gamescope-session-plus microemu` |
 | `/usr/share/gamescope-session-plus/sessions.d/microemu` | `CLIENTCMD=microemu-client`, `GAMESCOPE_BIN=microemu-gamescope`; `ORIENTATION=left` when `microemu.orientation` is `landscape-flipped` (`microset get`, 5 s), else no `ORIENTATION` and gamescope takes landscape from the panel's DT `rotation`. The launcher sources this file after `device-quirks`, so the value wins |
 | `microemu-gamescope` | Drops `--steam` and execs `/usr/bin/gamescope`. Without `--steam`, gamescope focuses ES-DE and the windows it starts with no `STEAM_GAME` atoms. |
-| `microemu-client` | Runs `microemu-game-stop`, writes `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` from the shipped file (the `microos` path filled in) and removes `es_find_rules.xml` there, links the shipped themes, reconciles the ES-DE settings, writes the BOOT INTO entries, starts `microemu-osd` and runs `/usr/bin/es-de` with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. When `/var/lib/microos/openh264/libopenh264.so.8` exists at that moment, ES-DE alone gets that dir prepended to `LD_LIBRARY_PATH` (H.264 video previews; MicroOS downloads Cisco's openh264 on the device). When ES-DE exits while a game runs (`microemu-game-running`), it waits for the game to end, checking every second. Then, with the unit `deactivating`, it blocks in `sleep infinity`; otherwise (Quit, crash, missing) it runs `microos-session back`, retries once after 2 s, then blocks; after a second failure it exits 1. |
+| `microemu-client` | Runs `microemu-game-stop`, waits for the card and picks the storage (Storage below), writes `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` from the shipped file (the `microos` path filled in, system paths mapped for the layout) and removes `es_find_rules.xml` there, links the shipped themes, reconciles the ES-DE settings, writes the BOOT INTO entries, starts `microemu-osd` and runs `/usr/bin/es-de` in the background with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`, picking again every 2 s. When `/var/lib/microos/openh264/libopenh264.so.8` exists at that moment, ES-DE alone gets that dir prepended to `LD_LIBRARY_PATH` (H.264 video previews; MicroOS downloads Cisco's openh264 on the device). When ES-DE exits while a game runs (`microemu-game-running`), it waits for the game to end, checking every second. Then, with the unit `deactivating`, it blocks in `sleep infinity`; otherwise (Quit, crash, missing) it runs `microos-session back`, retries once after 2 s, then blocks; after a second failure it exits 1. |
 | `microemu-stop` | `ExecStop` of the session, bounded at 15 s: `microemu-game-stop`, then SIGTERM to the `/usr/bin/es-de` process in the session's cgroup every 500 ms, up to 6 times or until it exits. |
 | `microemu-game-stop` | Runs every executable in `/usr/libexec/microemu/game-stop.d/` within 5 s of boottime in total, then `reset-failed`, `stop`, `reset-failed` of `microemu-game.scope`. |
 | `microemu-pad xb360` | Sets every InputPlumber composite device to `xb360` plus `keyboard` when InputPlumber takes its bus name, and each composite device InputPlumber adds after that (`InterfacesAdded`). Runs as long as the session (`microemu-pad.service`, bound to it, `After=` steamos-manager, restarted on failure). `deck-uhid` has no evdev pad while the Steam client is not running, so RetroArch reads the Xbox 360 pad. |
@@ -107,29 +107,107 @@ schema type (RetroArch's `"3.000000"` is 3), against the value last written, kep
 `written.json` is updated after each key. Files are replaced through a temp file in the same dir, written through when
 they are symlinks. App menu edits stay; MicroSET changes land at the next launch.
 
+## Storage
+
+`microemu-client` picks where ROMs, BIOS, saves, states, screenshots and scraped media live, before ES-DE starts and
+every 2 s while it runs. The card is `/run/microos/content`, MicroOS's link to the content card's mount. A missing or
+dangling link, a mount `findmnt` does not list, or a read only mount is no card (one log line).
+
+A layout counts when its ROMs folder is on the card, matched by exact name in a listing of the card root (a FAT card's
+`roms` is never `ROMs`), each part a real directory, not a symlink, inside the card:
+
+| | MicroOS | EmuDeck | ROCKNIX |
+|---|---|---|---|
+| ROMs, ES-DE `ROMDirectory` | `ROMs/` | `Emulation/roms/` | `roms/` |
+| RetroArch `system_directory` | `BIOS/retroarch/` | `Emulation/bios/` | `roms/bios/` |
+| Saves | `Saves/<core>/` | `Emulation/saves/microemu/saves/<core>/` | next to the ROM |
+| States | `States/<core>/` | `Emulation/saves/microemu/states/<core>/` | `roms/savestates/<system>/` |
+| Screenshots | `Screenshots/` | `Emulation/storage/retroarch/screenshots/` | `roms/screenshots/` |
+| Scraped media, ES-DE `MediaDirectory` | `Media/` | `Emulation/tools/downloaded_media/` | `roms/downloaded_media/` |
+| Gamelists | ES-DE appdata | ES-DE appdata | `roms/<system>/gamelist.xml` |
+
+- Several layouts on one card: MicroOS wins, then EmuDeck, then ROCKNIX; the others are logged.
+- No card, or no layout on it: the MicroOS layout under `~` (`~/ROMs`, `~/BIOS/retroarch`, `~/Saves`, `~/States`,
+  `~/Screenshots`, `~/Media`, made by MicroOS).
+- Everything follows the ROMs side. With ROMs on the card, saves go to the card; internal ROMs and their saves are hidden
+  while that card is in.
+- On the card, a missing or symlinked BIOS folder falls back to `~/BIOS/retroarch`, a media folder that exists but is not
+  a real folder to `~/Media`, both logged.
+- `ROMs/` is matched as written. System folders are the lowercase ES-DE names (`ROMs/gba`, `roms/psx`).
+- `<core>` is RetroArch's core name (`mGBA`, `PCSX-ReARMed`). `<system>` is the ROM's first folder under `roms/`, so
+  `roms/psx/<game>/<game>.m3u` keeps `roms/savestates/psx/`.
+- EmuDeck's own `Emulation/saves/retroarch` links are not read or touched.
+
+The pick creates no folder. It goes to `$XDG_RUNTIME_DIR/microemu/paths` (`layout`, `root`, `roms`, `bios`, `saves`,
+`states`, `screenshots`, `media`, `saves_in_content`) and through `microemu-reconcile paths <settings dir>` into
+`es_settings.xml`: `ROMDirectory`, `MediaDirectory` and `LegacyGamelistFileLocation` (`true` on a ROCKNIX card), written at
+every ES-DE start, so an edit in ES-DE's menu does not stay. A value holding `"`, a CR or LF, or not valid UTF-8 is
+refused and logged, nothing written. `custom_systems/es_systems.xml` maps the `<path>` of a system a layout names
+differently (no shipped system needs it).
+
+Before the first pick the client waits up to 10 s, 20 polls of 0.5 s, while `systemctl list-jobs --no-legend
+'microos-automount@*'` lists a job or such a unit is activating (a card in fsck). While ES-DE runs, a changed pick (card in
+or out, layout, rw to ro) stops ES-DE when `microemu-game-running` reports no game, or once the game ended (SIGKILL when
+it is still running 10 s after SIGTERM), writes the new pick and starts ES-DE again. That restart never runs `microos-session back`.
+
+ROCKNIX cards go back to ROCKNIX as they are. ES-DE reads and writes `roms/<system>/gamelist.xml` and shows ROCKNIX's
+scraped art where ES-DE has none (MicroOS's `es-de` patches); ES-DE's own scrapes go to `roms/downloaded_media/`.
+
+- "Saves per core" and "States per core" have no effect on a ROCKNIX card.
+- ROCKNIX keeps numbered, compressed state slots. The slot picked in RetroArch's menu loads, the newest is not picked by
+  itself.
+- ROCKNIX states do not load for `atari2600` (Stella 2014 here, Stella on ROCKNIX) and `snes` (bsnes-mercury here,
+  Snes9x on ROCKNIX).
+- ES-DE's orphaned data cleanup moves out ROCKNIX entries whose extension the shipped systems lack, backed up in
+  `roms/CLEANUP/<date>/<system>`.
+
 ## RetroArch
 
 `/usr/libexec/microemu/bin/retroarch -L /usr/lib64/libretro/<core>_libretro.so <rom>` is the only way ES-DE starts
 RetroArch. It exits 1 with a log line unless `gamescope-session-plus@microemu.service` is active, and unless the
 arguments are exactly `-L`, a core directly under `/usr/lib64/libretro/` and an absolute ROM path, which is what ES-DE
-passes. It writes its PID to `$XDG_RUNTIME_DIR/microemu/launching` and removes the file when it exits. It drops `/var/lib/microos/openh264` from `LD_LIBRARY_PATH` (unset when nothing else is left). Then it creates
-`~/.config/microemu/retroarch/retroarch.cfg` (when absent) and the data dirs, copies the core files and remaps (below)
-when missing, runs `microemu-game-free` (waits up to 8 s of boottime while `microemu-game.scope` is still stopping), the
-reconcile, and runs, waiting for it,
+passes. It also exits 1 without `$XDG_RUNTIME_DIR/microemu/paths` (the pick ES-DE started with), and for a ROM whose
+`realpath` is not under the pick's `roms`. It writes its PID to
+`$XDG_RUNTIME_DIR/microemu/launching` and removes the file when it exits. It drops `/var/lib/microos/openh264` from
+`LD_LIBRARY_PATH` (unset when nothing else is left). Then it creates `~/.config/microemu/retroarch/retroarch.cfg` (when
+absent) and the data dirs, and the pick's save, state and screenshot folders, the only place a folder is made on a card:
+each existing part a real directory, not a symlink, the result inside the side's root (the card or `~`), nothing for
+ROCKNIX saves. A failed check or `mkdir` exits 1, with no fallback to internal storage. It writes
+`$XDG_RUNTIME_DIR/microemu/retroarch-paths.cfg`:
+
+| Key | MicroOS, EmuDeck | ROCKNIX |
+|---|---|---|
+| `savefile_directory` | the pick's saves | the card's `roms` |
+| `savestate_directory` | the pick's states | `roms/savestates/<system>` |
+| `system_directory`, `screenshot_directory` | the pick's BIOS and screenshots | same |
+| `savefiles_in_content_dir` | `false` | `true` |
+| `savestates_in_content_dir`, `systemfiles_in_content_dir`, `screenshots_in_content_dir` | `false` | `false` |
+| `sort_savefiles_by_content_enable`, `sort_savestates_by_content_enable`, `sort_screenshots_by_content_enable` | `false` | `false` |
+| `sort_savefiles_enable`, `sort_savestates_enable` | not written (MicroSET) | `false` |
+
+It copies the core files and remaps (below) when missing, runs `microemu-game-free` (waits up to 8 s of boottime while
+`microemu-game.scope` is still stopping), the reconcile, and runs, waiting for it,
 
 ```
 systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
     --property=BindsTo=gamescope-session-plus@microemu.service --property=After=gamescope-session-plus@microemu.service \
     --property=TimeoutStopSec=5 -- /usr/bin/retroarch -c ~/.config/microemu/retroarch/retroarch.cfg \
-    --appendconfig /usr/share/microemu/retroarch/microemu.cfg -L <core> <rom>
+    --appendconfig "/usr/share/microemu/retroarch/microemu.cfg|$XDG_RUNTIME_DIR/microemu/retroarch-paths.cfg" -L <core> <rom>
 ```
 
-ES-DE waits for it; its exit code is the game's. `microemu.cfg` is applied over `retroarch.cfg` at every launch:
+After the game it runs `microemu-game-free` and the reconcile again. ES-DE waits for it; its exit code is the game's.
+
+RetroArch saves its whole config on exit, SIGTERM included, so the ROCKNIX `false` of the two sort keys lands in
+`retroarch.cfg`. Before a ROCKNIX launch the wrapper records their values in `~/.local/state/microemu/pinned-keys`
+(`<key>=<value>`, or `<key>` alone when absent). Every `microemu-reconcile retroarch` first puts a recorded value back (an
+absent key is removed again), and drops the record when `microemu-game.scope` is `inactive` or `failed`, so a killed
+wrapper is covered at the next launch. A change of those two rows in RetroArch's menu during a ROCKNIX game is not kept.
+
+`microemu.cfg` is applied over `retroarch.cfg` at every launch, `retroarch-paths.cfg` over both:
 `menu_driver = "rgui"`, `video_fullscreen = "true"`, `desktop_menu_enable = "false"` (Fedora's build crashed about 1 in
 3 starts with the Qt companion on), `input_menu_toggle = "nul"` and `input_menu_toggle_gamepad_combo = "2"` (L3 + R3),
 `autosave_interval = "10"`, online and core updaters hidden, Fedora's cores, info and pad profiles, the `udev` input and
-joypad drivers, saves, states, system (BIOS) files, screenshots, remaps, playlists, logs, thumbnails, core assets and
-cache under `~/.local/share/microemu/retroarch/`, the config dir `~/.config/microemu/retroarch/config` and the shader dir
+joypad drivers, remaps, playlists, logs, thumbnails, core assets and cache under `~/.local/share/microemu/retroarch/`, the config dir `~/.config/microemu/retroarch/config` and the shader dir
 `/usr/share/microemu/retroarch/shaders`.
 
 The pad is InputPlumber's Xbox 360 pad, which RetroArch maps by position (the bottom button is RetroPad B). Core
@@ -139,7 +217,7 @@ bsnes-mercury, so the pad's labels match the console's.
 
 Core files under `/usr/share/microemu/retroarch/config/<core>/` are copied to `~/.config/microemu/retroarch/config/<core>/`
 when missing: `Gambatte.opt` (accurate GBC color correction, LCD ghosting, `GBC - Pastel Mix` palette, boot ROM when
-`gb_bios.bin` or `gbc_bios.bin` is in the system dir), `mGBA.opt` (`mgba_interframe_blending = "mix_smart"`), and
+`gb_bios.bin` or `gbc_bios.bin` is in the BIOS folder), `mGBA.opt` (`mgba_interframe_blending = "mix_smart"`), and
 `<core>.cfg` with one frame of run ahead and rewind (granularity 15, muted) for Gambatte, mGBA, Nestopia, Stella 2014,
 ProSystem, Handy, Beetle NeoPop, Beetle PCE Fast, Beetle VB, Beetle WonderSwan and Game & Watch, rewind only for
 bsnes-mercury (its save states are not deterministic). Core presets in the shader dir's `presets/<core>/`: Nestopia
@@ -155,8 +233,8 @@ grid and pixel transparency shaders state no license, so they and the Gambatte a
 A game resumes from its last auto state, so an in game save made after that state can be lost when RetroArch is killed
 instead of quit.
 
-ES-DE systems, each with the bundled 3.5.0 system's name, path (`%ROMPATH%/<name>`, `~/ROMs/<name>` by default),
-extensions, platform and theme:
+ES-DE systems, each with the bundled 3.5.0 system's name, path (`%ROMPATH%/<name>`, `<ROMDirectory>/<name>` from the
+pick), extensions, platform and theme:
 
 | System | Core |
 |---|---|
@@ -203,14 +281,17 @@ at a pinned revision and sha256. `microemu-osd --render <png> <width> <height> <
 
 ## Tests
 
-`just test` runs the session, client, reconcile, RetroArch, OSD and asset tests; `just test-android` the Android ones.
+`just test` runs the session, client, storage layout, reconcile, RetroArch, OSD and asset tests; `just test-android` the
+Android ones. `layout-test.sh` builds a stat shim with `cc`. `retroarch-run-test.sh` runs Fedora's RetroArch with the mGBA
+and PCSX ReARMed cores on generated ROMs per layout, and is skipped without them or `xorriso`.
 `osd-test.sh` renders the pill when `dist/` holds the theme fonts and `speaker.svg` (`just install` first;
 `MICROEMU_OSD_TEST_THEME` and `MICROEMU_OSD_TEST_SPEAKER` override). The test pin overrides of `shaders.sh`, `osd.sh`,
-`stub.sh` and `microemu-gapps-install` apply only with `MICROEMU_TEST=1`.
+`stub.sh` and `microemu-gapps-install`, and `microemu-client`'s `MICROEMU_TEST_FOLDERS` rows, apply only with
+`MICROEMU_TEST=1`.
 
 ## Android
 
-Not installed. The pieces stay under `android/data/` with the paths they would install at; `game-stop.d/50-android` and the `androidgames` system are left out of `data/`.
+Not installed. The pieces stay under `android/data/` with the paths they would install at; `game-stop.d/50-android` and the `androidgames` system are left out of `data/`. They still use `~/ROMs/androidgames`; they move to the storage pick with the Android work.
 
 The `androidgames` system lists `.apk`, `.play` and `.update` files under `~/ROMs/androidgames/` and runs `/usr/libexec/microemu/microemu-apk
 <apk>`. Every Android game runs in one persistent Lepton context, `microemu-play`

@@ -13,6 +13,18 @@ OSD="${MICROEMU_OSD:-/usr/libexec/microemu/microemu-osd}"
 GAME_RUNNING="${MICROEMU_GAME_RUNNING:-/usr/libexec/microemu/microemu-game-running}"
 SESSIONS_DIR="${RUNTIME}/microos"
 OPENH264="${MICROEMU_OPENH264_DIR:-/var/lib/microos/openh264}"
+CONTENT="${MICROEMU_CONTENT_LINK:-/run/microos/content}"
+PATHS="${RUNTIME}/paths"
+
+declare -A FOLDERS=()
+
+test_folders() {
+    local side name dir
+    while read -r side name dir; do
+        [[ -z "${side}" ]] || FOLDERS[${side}/${name}]=${dir}
+    done <<< "${MICROEMU_TEST_FOLDERS:-}"
+}
+[[ "${MICROEMU_TEST:-}" != 1 ]] || test_folders
 
 log() { logger -t microemu-client -- "$*" 2>/dev/null || true; }
 
@@ -26,7 +38,7 @@ xml_escape() {
 }
 
 setup_systems() {
-    local dir="${APPDATA}/custom_systems" tmp text path
+    local dir="${APPDATA}/custom_systems" tmp text path key
     mkdir -p "${dir}"
     rm -rf "${dir}/es_find_rules.xml"
     [[ ! -d "${dir}/es_systems.xml" || -L "${dir}/es_systems.xml" ]] || rm -rf "${dir}/es_systems.xml"
@@ -34,6 +46,10 @@ setup_systems() {
         log "${SYSTEMS} unreadable"
         return 0
     fi
+    for key in "${!FOLDERS[@]}"; do
+        [[ "${key%%/*}" == "${layout}" ]] || continue
+        text=${text//"<path>%ROMPATH%/${key#*/}</path>"/"<path>%ROMPATH%/${FOLDERS[${key}]}</path>"}
+    done
     path=$(xml_escape "${SESSIONS_DIR}")
     tmp=$(mktemp "${dir}/.es_systems.XXXXXX") || return 0
     if printf '%s\n' "${text//%MICROOS_SESSIONS%/"${path}"}" > "${tmp}" && mv -fT "${tmp}" "${dir}/es_systems.xml"; then
@@ -78,6 +94,129 @@ boot_into() {
     } > "${gamelist}/gamelist.xml"
 }
 
+named() {
+    local dir=$1 name=$2 entry
+    for entry in "${dir}"/*; do
+        [[ "${entry##*/}" != "${name}" ]] || return 0
+    done
+    return 1
+}
+
+folder() {
+    local root=$1 path=$1 part real
+    local -a parts
+    IFS=/ read -r -a parts <<< "$2"
+    for part in "${parts[@]}"; do
+        named "${path}" "${part}" || return 1
+        path="${path}/${part}"
+        [[ -d "${path}" && ! -L "${path}" ]] || return 1
+    done
+    real=$(realpath -e -- "${path}" 2>/dev/null) || return 1
+    [[ "${real}" == "${root}/"* ]]
+}
+
+pick() {
+    local card="" opts root roms bios saves states shots media in_content=false found=()
+    notes=()
+    layout=names
+    if card=$(realpath -e -- "${CONTENT}" 2>/dev/null) && [[ -d "${card}" ]]; then
+        if ! opts=$(findmnt -rno OPTIONS --mountpoint "${card}" 2>/dev/null) || [[ -z "${opts}" ]]; then
+            notes+=("${card} is not mounted, using internal storage")
+            card=
+        elif [[ ",${opts##*$'\n'}," == *,ro,* ]]; then
+            notes+=("${card} is mounted read only, using internal storage")
+            card=
+        fi
+    else
+        card=
+    fi
+    if [[ -n "${card}" ]]; then
+        ! folder "${card}" ROMs || found+=(names)
+        ! folder "${card}" Emulation/roms || found+=(emudeck)
+        ! folder "${card}" roms || found+=(rocknix)
+        if (( ${#found[@]} == 0 )); then
+            notes+=("${card} has no ROMs, Emulation/roms or roms folder, using internal storage")
+            card=
+        else
+            layout=${found[0]}
+            (( ${#found[@]} == 1 )) || notes+=("${card} also has the ${found[*]:1} layout, using ${layout}")
+        fi
+    fi
+    case "${card:+${layout}}" in
+        names)
+            root=${card} roms=${card}/ROMs bios=BIOS/retroarch saves=${card}/Saves states=${card}/States
+            shots=${card}/Screenshots media=Media
+            ;;
+        emudeck)
+            root=${card} roms=${card}/Emulation/roms bios=Emulation/bios saves=${card}/Emulation/saves/microemu/saves
+            states=${card}/Emulation/saves/microemu/states shots=${card}/Emulation/storage/retroarch/screenshots
+            media=Emulation/tools/downloaded_media
+            ;;
+        rocknix)
+            root=${card} roms=${card}/roms bios=roms/bios saves='' states=${card}/roms/savestates
+            shots=${card}/roms/screenshots media=roms/downloaded_media in_content=true
+            ;;
+        *)
+            root=${HOME} roms=${HOME}/ROMs bios=${HOME}/BIOS/retroarch saves=${HOME}/Saves states=${HOME}/States
+            shots=${HOME}/Screenshots media=${HOME}/Media
+            ;;
+    esac
+    if [[ -n "${card}" ]]; then
+        if folder "${card}" "${bios}"; then
+            bios=${card}/${bios}
+        else
+            notes+=("${card}/${bios} is missing or not a folder on the card, using ${HOME}/BIOS/retroarch")
+            bios=${HOME}/BIOS/retroarch
+        fi
+        if [[ -e "${card}/${media}" || -L "${card}/${media}" ]] && ! folder "${card}" "${media}"; then
+            notes+=("${card}/${media} is not a folder on the card, using ${HOME}/Media")
+            media=${HOME}/Media
+        else
+            media=${card}/${media}
+        fi
+    fi
+    picked=$(printf 'layout=%s\nroot=%s\nroms=%s\nbios=%s\nsaves=%s\nstates=%s\nscreenshots=%s\nmedia=%s\nsaves_in_content=%s' \
+        "${layout}" "${root}" "${roms}" "${bios}" "${saves}" "${states}" "${shots}" "${media}" "${in_content}")
+    if [[ "${picked}" != "${noted-}" ]]; then
+        noted=${picked}
+        for note in "${notes[@]}"; do
+            log "${note}"
+        done
+    fi
+}
+
+write_paths() {
+    local tmp
+    mkdir -p "${RUNTIME}"
+    if tmp=$(mktemp "${RUNTIME}/.paths.XXXXXX") && printf '%s\n' "${picked}" > "${tmp}" && mv -fT "${tmp}" "${PATHS}"; then
+        return 0
+    fi
+    [[ -z "${tmp}" ]] || rm -f "${tmp}"
+    log "cannot write ${PATHS}"
+}
+
+commit() {
+    current=${picked}
+    write_paths
+    setup_systems
+    mkdir -p "${APPDATA}/settings"
+    "${RECONCILE}" paths "${APPDATA}/settings" || log "reconcile paths failed"
+}
+
+automount_busy() {
+    [[ -n "$(systemctl list-jobs --no-legend 'microos-automount@*' 2>/dev/null)" ||
+        -n "$(systemctl list-units --no-legend --plain --state=activating 'microos-automount@*' 2>/dev/null)" ]]
+}
+
+wait_automount() {
+    local n
+    for (( n = 0; n < 20; n++ )); do
+        automount_busy || return 0
+        sleep 0.5
+    done
+    log "microos-automount still busy after 10 s, picking the storage now"
+}
+
 start_osd() {
     osd_pid=
     if [[ ! -x "${OSD}" ]]; then
@@ -88,22 +227,78 @@ start_osd() {
     osd_pid=$!
 }
 
-run_esde() {
-    local rc=0
+stopping() { [[ "$(systemctl --user show -p ActiveState --value "${SESSION}" 2>/dev/null)" == deactivating ]]; }
+
+stop_esde() {
+    local n tick ended
+    kill -TERM "${esde_pid}" 2>/dev/null
+    for (( n = 0; n < 20; n++ )); do
+        sleep 0.5 &
+        tick=$!
+        rc=0
+        wait -n -p ended "${esde_pid}" "${tick}" || rc=$?
+        if [[ "${ended}" == "${esde_pid}" ]]; then
+            kill "${tick}" 2>/dev/null
+            wait "${tick}" 2>/dev/null
+            return 0
+        fi
+    done
+    log "es-de still running 10 s after SIGTERM, killing it"
+    kill -KILL "${esde_pid}" 2>/dev/null
+    rc=0
+    wait "${esde_pid}" || rc=$?
+}
+
+start_esde() {
     if [[ -e "${OPENH264}/libopenh264.so.8" ]]; then
         LD_LIBRARY_PATH="${OPENH264}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${ESDE}" &
     else
         "${ESDE}" &
     fi
     esde_pid=$!
-    wait "${esde_pid}" || rc=$?
-    log "es-de exited with ${rc}"
+}
+
+run_esde() {
+    local rc restart tick ended
+    while :; do
+        start_esde
+        restart=
+        while :; do
+            sleep 2 &
+            tick=$!
+            rc=0
+            wait -n -p ended "${esde_pid}" "${tick}" || rc=$?
+            if [[ "${ended}" == "${esde_pid}" ]]; then
+                kill "${tick}" 2>/dev/null
+                wait "${tick}" 2>/dev/null
+                break
+            fi
+            pick
+            [[ "${picked}" != "${current}" ]] || continue
+            "${GAME_RUNNING}" >/dev/null && continue
+            log "storage changed, restarting es-de"
+            restart=1
+            stop_esde
+            break
+        done
+        log "es-de exited with ${rc}"
+        [[ -n "${restart}" ]] || return 0
+        while ! stopping && "${GAME_RUNNING}" >/dev/null; do
+            sleep 1
+        done
+        if stopping; then
+            return 0
+        fi
+        pick
+        commit
+    done
 }
 
 "${GAME_STOP}"
-setup_systems
+wait_automount
+pick
+commit
 setup_themes
-mkdir -p "${APPDATA}/settings"
 "${RECONCILE}" esde "${APPDATA}/settings" || log "reconcile failed"
 boot_into
 export ESDE_APPDATA_DIR="${APPDATA}"
@@ -119,8 +314,6 @@ if [[ -n "${osd_pid}" ]] && ! kill -0 "${osd_pid}" 2>/dev/null; then
     wait "${osd_pid}" || rc=$?
     log "microemu-osd exited with ${rc}"
 fi
-
-stopping() { [[ "$(systemctl --user show -p ActiveState --value "${SESSION}" 2>/dev/null)" == deactivating ]]; }
 
 if game=$("${GAME_RUNNING}"); then
     log "es-de gone with a game (${game}), waiting for the game to end"

@@ -298,6 +298,63 @@ grep -q '^libretro_directory' "${cfg}" && fail "retroarch: an unsafe MicroSET va
 grep -q 'microemu.retroarch.video_driver: .* holds a quote or a line break, not written' "${STATE}/log" || fail "retroarch: unsafe write not logged"
 cmp -s "${MICROEMU_WRITTEN}" "${STATE}/written.before" || fail "retroarch: written.json changed by an unsafe MicroSET value"
 
+export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
+picks="${MICROEMU_RUNTIME_DIR}/paths"
+paths() { launch paths "${settings}"; }
+pick() {
+    mkdir -p "${MICROEMU_RUNTIME_DIR}"
+    printf '%s\n' "layout=$1" "root=$2" "roms=$3" "bios=$2/b" "saves=" "states=$2/s" "screenshots=$2/x" "media=$4" \
+        "saves_in_content=false" > "${picks}"
+}
+
+reset
+mkdir -p "${settings}"
+printf '<?xml version="1.0"?>\n<bool name="ShowHelpPrompts" value="false" />\n<string name="ROMDirectory" value="" />\n' > "${es}"
+pick names /c /c/ROMs '/c/Media & co'
+paths
+[[ "${rc}" == 0 ]] || fail "paths: exit ${rc}: $(cat "${STATE}/log")"
+grep -qxF '<string name="ROMDirectory" value="/c/ROMs" />' "${es}" || fail "paths: ROMDirectory $(grep ROMDirectory "${es}")"
+[[ "$(grep -c ROMDirectory "${es}")" == 1 ]] || fail "paths: ROMDirectory written twice"
+grep -qxF '<string name="MediaDirectory" value="/c/Media &amp; co" />' "${es}" || fail "paths: MediaDirectory $(grep MediaDirectory "${es}")"
+grep -qxF '<bool name="LegacyGamelistFileLocation" value="false" />' "${es}" || fail "paths: legacy not false for names"
+grep -qxF '<bool name="ShowHelpPrompts" value="false" />' "${es}" || fail "paths: an unowned setting dropped"
+[[ ! -s "${STATE}/microset" ]] || fail "paths: microset called: $(cat "${STATE}/microset")"
+pick emudeck /c /c/Emulation/roms /c/Emulation/tools/downloaded_media
+paths
+grep -qxF '<bool name="LegacyGamelistFileLocation" value="false" />' "${es}" || fail "paths: legacy not false for emudeck"
+pick rocknix /c /c/roms /c/roms/downloaded_media
+paths
+grep -qxF '<bool name="LegacyGamelistFileLocation" value="true" />' "${es}" || fail "paths: legacy not true for rocknix"
+grep -qxF '<string name="ROMDirectory" value="/c/roms" />' "${es}" || fail "paths: rocknix ROMDirectory"
+[[ "$(grep -c LegacyGamelistFileLocation "${es}")" == 1 ]] || fail "paths: legacy written twice"
+
+for bad in quote utf8; do
+    reset
+    pick names /c /c/ROMs /c/Media
+    paths
+    cp "${es}" "${STATE}/es.before"
+    case "${bad}" in
+        quote) pick names /c '/c/RO"Ms' /c/Media ;;
+        utf8) pick names /c "/c/RO$(printf '\377')Ms" /c/Media ;;
+    esac
+    paths
+    [[ "${rc}" == 1 ]] || fail "paths ${bad}: exit ${rc}"
+    cmp -s "${es}" "${STATE}/es.before" || fail "paths ${bad}: es_settings.xml changed: $(cat "${es}")"
+done
+grep -q 'ROMDirectory: .* from paths is not valid UTF-8, ES-DE paths not written' "${STATE}/log" || fail "paths utf8: no Unsafe log: $(cat "${STATE}/log")"
+reset
+pick names /c /c/ROMs /c/Media
+paths
+pick names /c '/c/RO"Ms' /c/Media
+paths
+grep -q 'ROMDirectory: .* from paths holds a quote or a line break, ES-DE paths not written' "${STATE}/log" || fail "paths quote: no Unsafe log: $(cat "${STATE}/log")"
+
+reset
+rm -f "${picks}"
+paths
+[[ "${rc}" == 1 && ! -e "${es}" ]] || fail "paths without a paths file: exit ${rc}"
+grep -q "${picks}: .*ES-DE paths not written" "${STATE}/log" || fail "paths without a paths file: no log"
+
 reset
 rc=0
 "${reconcile}" bogus "${ra}" 2>/dev/null || rc=$?

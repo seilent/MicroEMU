@@ -67,6 +67,7 @@ STUB
 cat > "${T}/bin/sleep" <<'STUB'
 #!/usr/bin/bash
 echo "sleep $*" >> "${STATE}/calls"
+[[ "$*" != 2 ]] || exec /usr/bin/sleep 0.05
 STUB
 cat > "${T}/bin/microemu-game-stop" <<'STUB'
 #!/usr/bin/bash
@@ -126,7 +127,7 @@ run() {
     "${client}" 2> "${STATE}/stderr" || rc=$?
 }
 
-calls() { cat "${STATE}/calls"; }
+calls() { grep -vx 'sleep 2' "${STATE}/calls" || true; }
 
 count() { grep -c -- "$1" "${STATE}/calls" || true; }
 
@@ -135,6 +136,9 @@ back="microos-session back"
 reset deactivating
 run
 expected="microemu-game-stop
+systemctl list-jobs --no-legend microos-automount@*
+systemctl list-units --no-legend --plain --state=activating microos-automount@*
+reconcile paths ${MICROEMU_ESDE_APPDATA_DIR}/settings
 reconcile esde ${MICROEMU_ESDE_APPDATA_DIR}/settings
 microos-session list
 es-de
@@ -213,7 +217,7 @@ run
 reset active 0 "1 1"
 run
 [[ "${rc}" == 1 ]] || fail "back failing twice exit ${rc}, expected 1"
-[[ "$(count "^${back}$")" == 2 && "$(count "^sleep 2$")" == 1 ]] || fail "back failing twice: $(calls)"
+[[ "$(count "^${back}$")" == 2 && "$(sed -n "/^${back}$/,\$p" "${STATE}/calls" | grep -cx 'sleep 2')" == 1 ]] || fail "back failing twice: $(calls)"
 grep -qx "microos-session back failed twice, ending the session" "${STATE}/log" || fail "back failing twice: no log line"
 
 reset active 0 "1 0"

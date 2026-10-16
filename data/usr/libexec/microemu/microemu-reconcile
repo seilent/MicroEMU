@@ -8,10 +8,15 @@ import tempfile
 
 SCHEMA = os.environ.get("MICROEMU_SCHEMA", "/usr/share/microset/schema.d/50-microemu.json")
 MICROSET = os.environ.get("MICROEMU_MICROSET", "microset")
-WRITTEN = os.environ.get("MICROEMU_WRITTEN") or os.path.join(
-    os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"),
-    "microemu", "written.json")
+STATE_HOME = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+WRITTEN = os.environ.get("MICROEMU_WRITTEN") or os.path.join(STATE_HOME, "microemu", "written.json")
+PINNED = os.environ.get("MICROEMU_PINNED") or os.path.join(STATE_HOME, "microemu", "pinned-keys")
+RUNTIME = os.environ.get("MICROEMU_RUNTIME_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microemu")
 ESDE_FILE = "es_settings.xml"
+RA_FILE = "retroarch.cfg"
+PINNED_KEYS = ("sort_savefiles_enable", "sort_savestates_enable")
+GAME_SCOPE = "microemu-game.scope"
 TIMEOUT_S = 5
 UNSAFE = ('"', "\n", "\r")
 
@@ -23,6 +28,10 @@ class Unsafe(ValueError):
 def check_safe(value, where):
     if any(c in text_of(value) for c in UNSAFE):
         raise Unsafe(f"{text_of(value)!r} from {where} holds a quote or a line break")
+    try:
+        text_of(value).encode("utf-8")
+    except UnicodeEncodeError:
+        raise Unsafe(f"{text_of(value)!r} from {where} is not valid UTF-8") from None
     return value
 
 
@@ -125,12 +134,12 @@ def replace_file(path, content):
         raise
 
 
-def write_value(path, setting, kind, value):
+def write_value(path, setting, kind, value, where="MicroSET"):
     try:
         text = open(path, encoding="utf-8", errors="replace").read()
     except FileNotFoundError:
         text = ""
-    value = text_of(check_safe(value, "MicroSET"))
+    value = text_of(check_safe(value, where))
     if os.path.basename(path) == ESDE_FILE:
         if not text:
             text = '<?xml version="1.0"?>\n'
@@ -158,6 +167,85 @@ def write_value(path, setting, kind, value):
     replace_file(path, text)
 
 
+def remove_value(path, setting):
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except FileNotFoundError:
+        return
+    kept = re.sub(ra_pattern(setting).pattern + r"\n?", "", text, flags=re.M)
+    if kept != text:
+        replace_file(path, kept)
+
+
+def scope_state():
+    try:
+        result = subprocess.run(["systemctl", "--user", "show", "-P", "ActiveState", GAME_SCOPE],
+                                capture_output=True, text=True, timeout=TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"unknown ({error})"
+    return result.stdout.strip()
+
+
+def replay(base):
+    try:
+        lines = open(PINNED, encoding="utf-8", errors="replace").read().splitlines()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        log(f"{PINNED}: {error}")
+        return
+    path = os.path.join(base, RA_FILE)
+    for line in lines:
+        setting, assigned, value = line.partition("=")
+        if setting not in PINNED_KEYS:
+            log(f"{line!r} in {PINNED} is not a pinned key, skipped")
+            continue
+        try:
+            if assigned:
+                write_value(path, setting, "s", value, os.path.basename(PINNED))
+            else:
+                remove_value(path, setting)
+        except Unsafe as error:
+            log(f"{setting}: {error}, not restored")
+    state = scope_state()
+    if state in ("inactive", "failed", ""):
+        try:
+            os.unlink(PINNED)
+        except FileNotFoundError:
+            pass
+        log(f"{', '.join(PINNED_KEYS)} restored from {PINNED}, record dropped")
+    else:
+        log(f"{', '.join(PINNED_KEYS)} restored from {PINNED}, record kept while {GAME_SCOPE} is {state}")
+
+
+def set_paths(base):
+    source = os.path.join(RUNTIME, "paths")
+    try:
+        text = open(source, encoding="utf-8", errors="surrogateescape").read()
+    except OSError as error:
+        log(f"{source}: {error}, ES-DE paths not written")
+        return 1
+    picked = {}
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        picked[key] = value
+    if picked.get("layout") not in ("names", "emudeck", "rocknix") or not picked.get("roms") or not picked.get("media"):
+        log(f"{source} is incomplete, ES-DE paths not written")
+        return 1
+    values = (("ROMDirectory", "s", picked["roms"]), ("MediaDirectory", "s", picked["media"]),
+              ("LegacyGamelistFileLocation", "b", picked["layout"] == "rocknix"))
+    try:
+        for setting, _, value in values:
+            check_safe(value, "paths")
+    except Unsafe as error:
+        log(f"{setting}: {error}, ES-DE paths not written")
+        return 1
+    path = os.path.join(base, ESDE_FILE)
+    for setting, kind, value in values:
+        write_value(path, setting, kind, value, "paths")
+    return 0
+
+
 def load_written():
     try:
         data = json.load(open(WRITTEN, encoding="utf-8"))
@@ -179,10 +267,14 @@ def microset(*args):
 
 
 def main(argv):
-    if len(argv) != 3 or argv[1] not in ("esde", "retroarch"):
-        print("usage: microemu-reconcile esde|retroarch <dir>", file=sys.stderr)
+    if len(argv) != 3 or argv[1] not in ("esde", "retroarch", "paths"):
+        print("usage: microemu-reconcile esde|retroarch|paths <dir>", file=sys.stderr)
         return 2
     mode, base = argv[1], argv[2]
+    if mode == "paths":
+        return set_paths(base)
+    if mode == "retroarch":
+        replay(base)
     try:
         keys = json.load(open(SCHEMA, encoding="utf-8"))["keys"]
     except (OSError, ValueError, KeyError) as error:

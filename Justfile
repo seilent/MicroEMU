@@ -13,12 +13,15 @@ test:
     bash tests/systems-test.sh
     bash tests/client-test.sh
     bash tests/reconcile-test.sh
+    bash tests/layout-test.sh
+    bash tests/leak-test.sh
     bash tests/lc-test.sh
     bash tests/stop-test.sh
     bash tests/pad-test.sh
     bash tests/osd-test.sh
     bash tests/osd-build-test.sh
     bash tests/retroarch-test.sh
+    bash tests/retroarch-run-test.sh
     bash tests/game-free-test.sh
     bash tests/shaders-test.sh
     bash tests/theme-test.sh

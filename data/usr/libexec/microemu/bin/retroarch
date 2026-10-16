@@ -12,6 +12,9 @@ RECONCILE="${MICROEMU_RECONCILE:-/usr/libexec/microemu/microemu-reconcile}"
 OPENH264="${MICROEMU_OPENH264_DIR:-/var/lib/microos/openh264}"
 RUNTIME="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}"
 MARKER="${RUNTIME}/launching"
+PATHS="${RUNTIME}/paths"
+PATHS_CFG="${RUNTIME}/retroarch-paths.cfg"
+PINNED="${MICROEMU_PINNED:-${XDG_STATE_HOME:-${HOME}/.local/state}/microemu/pinned-keys}"
 
 log() { logger -t microemu-retroarch -- "$*" 2>/dev/null || true; }
 
@@ -32,6 +35,37 @@ refuse() {
     exit 1
 }
 
+make_dir() {
+    local root=$1 path=$1 part real_root real
+    local -a parts
+    real_root=$(realpath -e -- "${root}" 2>/dev/null) || return 1
+    [[ "$2" == "${root}/"* ]] || return 1
+    IFS=/ read -r -a parts <<< "${2#"${root}/"}"
+    for part in "${parts[@]}"; do
+        [[ -n "${part}" && "${part}" != . && "${part}" != .. ]] || return 1
+        path="${path}/${part}"
+        if [[ -e "${path}" || -L "${path}" ]]; then
+            [[ -d "${path}" && ! -L "${path}" ]] || return 1
+        else
+            mkdir -- "${path}" || return 1
+        fi
+    done
+    real=$(realpath -e -- "${path}" 2>/dev/null) || return 1
+    [[ "${real}" == "${real_root}/"* ]]
+}
+
+pin() {
+    local key found tmp
+    mkdir -p "$(dirname "${PINNED}")" || return 1
+    tmp=$(mktemp "${PINNED}.XXXXXX") || return 1
+    for key in sort_savefiles_enable sort_savestates_enable; do
+        found=$(sed -nE "s/^[[:blank:]]*${key}[[:blank:]]*=[[:blank:]]*\"(.*)\"[[:blank:]]*\$/=\1/p" "${CONFIG}" | tail -n 1)
+        printf '%s%s\n' "${key}" "${found}"
+    done > "${tmp}" && mv -fT "${tmp}" "${PINNED}" && return 0
+    rm -f "${tmp}"
+    return 1
+}
+
 systemctl --user is-active --quiet "${SESSION}" || refuse "${SESSION} is not active, refusing"
 
 if (( $# != 3 )) || [[ "$1" != -L ]]; then
@@ -42,13 +76,60 @@ rom=$3
 [[ "${rom}" == /* ]] || refuse "rom ${rom} is not an absolute path"
 [[ "${core}" =~ ^/usr/lib64/libretro/[A-Za-z0-9_]+_libretro\.so$ ]] || refuse "core ${core} is not under /usr/lib64/libretro"
 
+[[ -f "${PATHS}" && -r "${PATHS}" ]] || refuse "${PATHS} is missing, refusing"
+declare -A pick=()
+while IFS= read -r line; do
+    case "${line%%=*}" in
+        layout|root|roms|bios|saves|states|screenshots|saves_in_content) pick[${line%%=*}]=${line#*=} ;;
+    esac
+done < "${PATHS}"
+case "${pick[layout]-}" in
+    names|emudeck) [[ "${pick[saves]-}" == /* && "${pick[saves_in_content]-}" == false ]] || refuse "${PATHS} is incomplete, refusing" ;;
+    rocknix) [[ -z "${pick[saves]-}" && "${pick[saves_in_content]-}" == true ]] || refuse "${PATHS} is incomplete, refusing" ;;
+    *) refuse "${PATHS} names no layout, refusing" ;;
+esac
+for key in root roms bios states screenshots; do
+    [[ "${pick[${key}]-}" == /* ]] || refuse "${PATHS} is incomplete, refusing"
+done
+for key in "${!pick[@]}"; do
+    [[ "${pick[${key}]}" != *[\"$'\r']* ]] || refuse "${PATHS} ${key} holds a quote or a line break, refusing"
+done
+real_roms=$(realpath -e -- "${pick[roms]}" 2>/dev/null) || refuse "${pick[roms]} does not exist, refusing"
+real_rom=$(realpath -e -- "${rom}" 2>/dev/null) || refuse "rom ${rom} does not exist"
+[[ "${real_rom}" == "${real_roms}/"* ]] || refuse "rom ${rom} is not under ${pick[roms]}, refusing"
+states=${pick[states]}
+if [[ "${pick[layout]}" == rocknix ]]; then
+    system=${real_rom#"${real_roms}/"}
+    [[ "${system}" == */* ]] || refuse "rom ${rom} is not in a system folder, refusing"
+    states="${states}/${system%%/*}"
+    [[ "${states}" != *[\"$'\r']* ]] || refuse "${states} holds a quote or a line break, refusing"
+fi
+
 mkdir -p "${RUNTIME}"
 echo "$$" > "${MARKER}"
 trap 'rm -f "${MARKER}"' EXIT
 trap 'exit 143' TERM
 
-mkdir -p "$(dirname "${CONFIG}")" "${DATA}/saves" "${DATA}/states" "${DATA}/system" "${DATA}/screenshots" \
-    "${DATA}/remaps" "${DATA}/playlists" "${DATA}/logs/runtime" "${DATA}/thumbnails" "${DATA}/downloads" "${DATA}/cache"
+mkdir -p "$(dirname "${CONFIG}")" "${DATA}/remaps" "${DATA}/playlists" "${DATA}/logs/runtime" "${DATA}/thumbnails" \
+    "${DATA}/downloads" "${DATA}/cache"
+for dir in ${pick[saves]:+"${pick[saves]}"} "${states}" "${pick[screenshots]}"; do
+    make_dir "${pick[root]}" "${dir}" || refuse "${dir} is not a folder under ${pick[root]} or cannot be made, refusing"
+done
+in_content=${pick[saves_in_content]}
+tmp=$(mktemp "${RUNTIME}/.retroarch-paths.XXXXXX") || refuse "cannot write ${PATHS_CFG}"
+if ! {
+    printf '%s = "%s"\n' savefile_directory "${pick[saves]:-${pick[roms]}}" savestate_directory "${states}" \
+        system_directory "${pick[bios]}" screenshot_directory "${pick[screenshots]}" \
+        savefiles_in_content_dir "${in_content}" savestates_in_content_dir false systemfiles_in_content_dir false \
+        screenshots_in_content_dir false sort_savefiles_by_content_enable false sort_savestates_by_content_enable false \
+        sort_screenshots_by_content_enable false
+    if [[ "${pick[layout]}" == rocknix ]]; then
+        printf '%s = "%s"\n' sort_savefiles_enable false sort_savestates_enable false
+    fi
+} > "${tmp}" || ! mv -fT "${tmp}" "${PATHS_CFG}"; then
+    rm -f "${tmp}"
+    refuse "cannot write ${PATHS_CFG}"
+fi
 [[ -e "${CONFIG}" ]] || : > "${CONFIG}"
 copy_missing "${SHARE}/config" "$(dirname "${CONFIG}")/config"
 copy_missing "${SHARE}/remaps" "${DATA}/remaps"
@@ -67,9 +148,14 @@ if [[ -n "${LD_LIBRARY_PATH+x}" ]]; then
 fi
 "${GAME_FREE}" || refuse "microemu-game.scope is still stopping"
 "${RECONCILE}" retroarch "$(dirname "${CONFIG}")" || log "reconcile failed"
+if [[ "${pick[layout]}" == rocknix && ! -e "${PINNED}" ]]; then
+    pin || refuse "cannot write ${PINNED}"
+fi
 systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
     --property=BindsTo="${SESSION}" --property=After="${SESSION}" --property=TimeoutStopSec=5 \
-    -- "${BIN}" -c "${CONFIG}" --appendconfig "${APPEND}" -L "${core}" "${rom}" &
+    -- "${BIN}" -c "${CONFIG}" --appendconfig "${APPEND}|${PATHS_CFG}" -L "${core}" "${rom}" &
 rc=0
 wait "$!" || rc=$?
+"${GAME_FREE}"
+"${RECONCILE}" retroarch "$(dirname "${CONFIG}")" || log "reconcile failed"
 exit "${rc}"
