@@ -1,0 +1,18 @@
+#!/usr/bin/bash
+set -u
+
+GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+GAME_RUNNING="${MICROEMU_GAME_RUNNING:-/usr/libexec/microemu/microemu-game-running}"
+
+log() { logger -t microemu-lc -- "$*" 2>/dev/null || true; }
+
+if game=$("${GAME_RUNNING}"); then
+    log "game ${game}, stopping it"
+    if [[ "${game}" == launch\ * ]]; then
+        kill -TERM "${game#launch }" 2>/dev/null || true
+    fi
+    "${GAME_STOP}"
+else
+    microos-session back || log "microos-session back failed"
+fi
+exit 0

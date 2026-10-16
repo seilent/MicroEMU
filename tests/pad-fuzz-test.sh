@@ -5,8 +5,8 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-nodes="${repo}/sysext/usr/libexec/microemu/microemu-pad-nodes"
-fuzz="${repo}/sysext/usr/libexec/microemu/microemu-pad-fuzz"
+nodes="${repo}/android/data/usr/libexec/microemu/microemu-pad-nodes"
+fuzz="${repo}/android/data/usr/libexec/microemu/microemu-pad-fuzz"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT

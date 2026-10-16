@@ -5,8 +5,8 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-sideload="${repo}/sysext/usr/libexec/microemu/microemu-sideload"
-prune="${repo}/sysext/usr/bin/microemu-android-prune"
+sideload="${repo}/android/data/usr/libexec/microemu/microemu-sideload"
+prune="${repo}/android/data/usr/bin/microemu-android-prune"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT

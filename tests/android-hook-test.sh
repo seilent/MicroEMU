@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-hook="${repo}/sysext/usr/libexec/microemu/game-stop.d/50-android"
+hook="${repo}/android/data/usr/libexec/microemu/game-stop.d/50-android"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT

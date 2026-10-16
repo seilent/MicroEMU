@@ -1,0 +1,115 @@
+#!/usr/bin/python3
+import os
+import re
+import signal
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+NAME = "org.shadowblip.InputPlumber"
+ROOT = "/org/shadowblip/InputPlumber"
+COMPOSITE = "org.shadowblip.Input.CompositeDevice"
+OM = "org.freedesktop.DBus.ObjectManager"
+TARGETS = ["xb360", "keyboard"]
+TIMEOUT_MS = 5000
+DEVICE = re.compile(r"/org/shadowblip/InputPlumber/CompositeDevice[0-9]+")
+
+
+def log(message):
+    print(f"microemu-pad: {message}", file=sys.stderr, flush=True)
+
+
+class Pad:
+    def __init__(self, bus):
+        self.bus = bus
+        self.owner = None
+        self.sub = None
+
+    def set_targets(self, path):
+        def done(conn, result):
+            try:
+                conn.call_finish(result)
+                log(f"set {path} target to {' '.join(TARGETS)}")
+            except GLib.Error as error:
+                log(f"failed to set {path} target to {' '.join(TARGETS)}: {error.message}")
+
+        self.bus.call(NAME, path, COMPOSITE, "SetTargetDevices", GLib.Variant("(as)", (TARGETS,)), None,
+                      Gio.DBusCallFlags.NONE, TIMEOUT_MS, None, done)
+
+    def on_added(self, _conn, _sender, _path, _iface, _signal, params):
+        path, interfaces = params.unpack()
+        if DEVICE.fullmatch(path) and COMPOSITE in interfaces:
+            self.set_targets(path)
+
+    def on_objects(self, conn, result):
+        try:
+            objects = conn.call_finish(result).unpack()[0]
+        except GLib.Error as error:
+            log(f"GetManagedObjects failed: {error.message}")
+            return
+        paths = sorted(p for p, i in objects.items() if DEVICE.fullmatch(p) and COMPOSITE in i)
+        if not paths:
+            log("no composite device found")
+        for path in paths:
+            self.set_targets(path)
+
+    def appeared(self, _conn, _name, owner):
+        self.owner = owner
+        if self.sub is not None:
+            self.bus.signal_unsubscribe(self.sub)
+        self.sub = self.bus.signal_subscribe(owner, OM, "InterfacesAdded", ROOT, None, Gio.DBusSignalFlags.NONE,
+                                             self.on_added)
+        self.bus.call(NAME, ROOT, OM, "GetManagedObjects", None, GLib.VariantType("(a{oa{sa{sv}}})"),
+                      Gio.DBusCallFlags.NONE, TIMEOUT_MS, None, self.on_objects)
+
+    def vanished(self, _conn, _name):
+        if self.owner is not None:
+            log("InputPlumber left the bus")
+        self.owner = None
+        if self.sub is not None:
+            self.bus.signal_unsubscribe(self.sub)
+            self.sub = None
+
+
+def unix_signal_add():
+    import warnings
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", gi.PyGIDeprecationWarning)
+            from gi.repository import GLibUnix
+        return GLibUnix.signal_add
+    except (ImportError, ValueError, AttributeError):
+        return GLib.unix_signal_add
+
+
+def main(argv):
+    if argv[1:] != ["xb360"]:
+        log("usage: microemu-pad xb360")
+        return 2
+    address = os.environ.get("MICROEMU_PAD_BUS")
+    try:
+        if address:
+            bus = Gio.DBusConnection.new_for_address_sync(
+                address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None, None)
+        else:
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    except GLib.Error as error:
+        log(f"no system bus: {error.message}")
+        return 1
+    pad = Pad(bus)
+    Gio.bus_watch_name_on_connection(bus, NAME, Gio.BusNameWatcherFlags.NONE, pad.appeared, pad.vanished)
+    loop = GLib.MainLoop()
+    signal_add = unix_signal_add()
+    signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, loop.quit)
+    signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, loop.quit)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

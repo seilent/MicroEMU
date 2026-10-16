@@ -1,9 +1,0 @@
-[Unit]
-Description=MicroEMU pad target
-BindsTo=gamescope-session-plus@microemu.service
-After=gamescope-session-plus@microemu.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/libexec/microemu/microemu-pad xb360

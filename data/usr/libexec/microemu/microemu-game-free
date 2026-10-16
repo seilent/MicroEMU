@@ -1,0 +1,30 @@
+#!/usr/bin/bash
+set -u
+
+SCOPE=microemu-game.scope
+WAIT_S="${MICROEMU_GAME_FREE_S:-8}"
+POLL_S="${MICROEMU_GAME_FREE_POLL_S:-0.2}"
+UPTIME="${MICROEMU_UPTIME:-/proc/uptime}"
+
+state() { systemctl --user show -P ActiveState "${SCOPE}" 2>/dev/null; }
+
+uptime_ms() {
+    local up _
+    read -r up _ < "${UPTIME}"
+    printf '%d\n' $(( 10#${up%.*} * 1000 + 10#${up#*.} * 10 ))
+}
+
+deadline=$(( $(uptime_ms) + WAIT_S * 1000 ))
+while :; do
+    case "$(state)" in
+        inactive|failed|"") break ;;
+    esac
+    if (( $(uptime_ms) >= deadline )); then
+        logger -t microemu-game-free -- "${SCOPE} still $(state) after ${WAIT_S} s" 2>/dev/null || true
+        echo "microemu-game-free: ${SCOPE} still $(state) after ${WAIT_S} s" >&2
+        exit 1
+    fi
+    sleep "${POLL_S}"
+done
+systemctl --user reset-failed "${SCOPE}" >/dev/null 2>&1 || true
+exit 0

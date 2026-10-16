@@ -1,157 +1,159 @@
 # MicroEMU
 
-An ES-DE emulation session for [Armada](https://github.com/armada-os/armada), shipped as a systemd-sysext overlay.
-
-Status: runs on the AYANEO Pocket MICRO 2 (Armada `20261011.b995457`, 2026-10-13). Needs an Armada
-image with session drop-in support (`/usr/lib/armada/sessions.d`, `armada-session-switch@.service`).
+The ES-DE emulation session of [MicroOS](https://github.com/seilent/MicroOS) on the AYANEO Pocket MICRO 2, packaged as
+the `microemu` RPM.
 
 ## Layout
 
 | Path | Content |
 |---|---|
-| `sysext/` | Static overlay, copied into `dist/` as is, without `__pycache__` or `*.pyc`. `/usr` only, nothing under `/etc`. |
-| `build/` | `base.env` (pinned image), `Containerfile`, `build.sh`, `esde.sh`, `retroarch.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, `osd.sh`, `stub.sh`, device scripts for the dev loop. |
-| `android/restrictions-stub/` | Source of the `restrictions` binder stub and its init `.rc`, built by `build/stub.sh`. |
-| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. `esde-test.sh` runs the real `curl`, `python3`, `mksquashfs` and `unsquashfs` (with `-o`) on the host, `systems-test.sh` runs `xmllint`, `stub-test.sh` and `gapps-install-test.sh` run `zip` and `unzip`, `sync-test.sh` runs `python3` with `sqlite3`, `play-update-test.sh` runs `python3`, `osd-test.sh` runs `python3` with `gi` (Pango, PangoCairo) and `cairo` and renders the pill when `dist/` holds the theme fonts and `speaker.svg` (`MICROEMU_OSD_TEST_THEME` and `MICROEMU_OSD_TEST_SPEAKER` override), `shaders-test.sh` runs `zip`, `unzip`, `curl` (file URLs) and `python3`. |
+| `data/` | Files installed as is, `/usr` only. |
+| `build/` | `install.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, `osd.sh`, and `stub.sh` for Android. |
+| `android/` | Android games through Lepton: `data/` (not installed) and the `restrictions` stub source. |
+| `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. |
 
-`dist/usr/share/microemu/` holds `version` and `build-manifest` (image digest, `IMAGE_VERSION`, `VERSION_ID`, microemu
-version, the ES-DE version, asset sha256 and size, extracted tree size, the RetroArch version and core count, the slang-shaders commit, Retro Crisis zip sha256 and shader file count, the theme
-revision, tarball sha256 and size, tree size, the speaker glyph's revision and sha256, the builder's `rpm -qa`). `paths` lists every file and link
-the sysext ships.
+## Install
 
-## ES-DE
+`build/install.sh <destdir>` copies `data/` into `<destdir>` without `__pycache__` or `*.pyc`, then adds the pinned
+assets: the slang shaders and Retro Crisis presets (`shaders.sh`), the Art Book Next theme (`theme.sh`) and the volume
+glyph (`osd.sh`), and sets every dir under `<destdir>` to 0755 whatever the umask. Each download is checked against its sha256 and cached in `MICROEMU_CACHE` (default
+`build/cache/`); with a full cache it makes no network call. It writes `/usr/share/microemu/version`
+(`MICROEMU_VERSION`) and `build-manifest` (the asset revisions). `just install` installs into `dist/`.
 
-Upstream `ES-DE_aarch64.AppImage` 3.5.0, unmodified, extracted at build time to `/usr/lib/microemu/es-de/` and started
-through its `AppRun` (a link to `usr/bin/es-de`). No FUSE mount at run time. `build/esde.sh` pins the GitLab package
-file URL and the sha256 (132372640 byte asset), caches it in `build/cache/es-de/`, fetches again on a cache miss or a
-bad hash, refuses a download with another hash, checks the little endian ELF64 header, reads the squashfs offset from it (the end of the
-section header table) and unpacks it with `unsquashfs -o`. A failed download leaves nothing in the cache. The
-extraction runs in a work directory inside `dist/`. The tree is 324 MB. ES-DE's MIT license goes to
-`/usr/share/licenses/microemu/es-de.txt`; the third party licenses stay in the tree under `usr/share/es-de/licenses/`.
+ES-DE comes from MicroOS's own `es-de` package, RetroArch and the 13 cores from Fedora (`/usr/bin/retroarch`,
+`/usr/lib64/libretro/`, `/usr/share/libretro/{info,autoconfig}`).
 
 ## Session
 
-`gamescope-session-plus@microemu.service`, started by sddm from `microemu.desktop`. microemu registers it with Armada's
-session-control through `/usr/lib/armada/sessions.d/microemu.conf` (`DESKTOP=microemu.desktop`,
-`UNIT=gamescope-session-plus@microemu.service`), so `armada-session-switch@microemu.service` switches to it and
-`armada-session-switch@gamemode.service` back.
-
 | Path | Does |
 |---|---|
-| `usr/share/gamescope-session-plus/sessions.d/microemu` | `CLIENTCMD=/usr/libexec/microemu/microemu-client`, `GAMESCOPE_BIN=/usr/libexec/microemu/microemu-gamescope`, no `ORIENTATION` (landscape from the panel). `short_session_recover` starts the switch to game mode with `--no-block`. |
-| `microemu-gamescope` | Drops `--steam` and execs `/usr/bin/gamescope` with the other arguments. Without `--steam`, gamescope focuses ES-DE and the windows it starts with no `STEAM_GAME` atoms. |
-| `microemu-client` | Runs `microemu-game-stop` to clear what a previous session left, links `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` to the shipped file (replacing a file, link or directory there) and removes `es_find_rules.xml` there, then starts `microemu-osd` (Volume pill) and runs ES-DE with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. While `$XDG_RUNTIME_DIR/microemu/esde-reload` exists and `microemu-game.scope` is not active (checked every second), it removes the file, sends ES-DE SIGTERM and starts it again in place, on the Android Games gamelist (`StartupSystem` `androidgames`, `StartupView` `gamelist` in `es_settings.xml`; the previous lines are kept in `settings/microemu-startup.saved` and put back after that ES-DE exits, or at the next client start, unless the startup setting was changed meanwhile). When ES-DE exits and the unit is `deactivating`, it blocks in `sleep infinity`. Otherwise (ES-DE quit, crash or missing) it runs `systemctl start armada-session-switch@gamemode.service`, retries once after 2 s, then blocks in `sleep infinity`; after a second failure it exits 1. |
-| `microemu-leave session` | Inside the microemu session, `systemctl --no-block start armada-session-switch@gamemode.service`, then returns. Elsewhere a log line. |
-| `microemu-game-stop` | Runs every executable in `/usr/libexec/microemu/game-stop.d/` in name order within 5 s in total (each hook gets what is left, SIGKILL 1 s after its bound; one that would start after the 5 s is skipped; a failure is logged, the rest still run), then `systemctl --user reset-failed`, `stop`, `reset-failed` of `microemu-game.scope`. A game that outlives the scope stops through a hook there. |
-| `microemu-stop` | `ExecStop` of the session, bounded at 15 s (SIGKILL 2 s later): `microemu-game-stop`, then SIGTERM to the process whose `/proc/<pid>/exe` is `/usr/lib/microemu/es-de/usr/bin/es-de` and whose cgroup is the microemu session unit, every 500 ms up to 6 times or until it exits, then a blocking stop of `microemu-play.service` within what is left. |
-| `microemu-pad xb360` | Sets every InputPlumber composite device to `xb360` plus `keyboard`, logging each device set or failed. Run by `microemu-pad.service` (`BindsTo=` and `After=` the session, wanted through `20-microemu-pad.conf`). |
+| `/usr/lib/microos/sessions.d/microemu.conf` | `LABEL=MicroEMU`, `STOP=unit`, `DEFAULT=yes`, `GAME_SCOPE=microemu-game.scope` (a switch out of MicroEMU with a core running asks for the confirm) |
+| `/usr/share/wayland-sessions/microemu.desktop` | `gamescope-session-plus microemu` |
+| `/usr/share/gamescope-session-plus/sessions.d/microemu` | `CLIENTCMD=microemu-client`, `GAMESCOPE_BIN=microemu-gamescope`; `ORIENTATION=left` when `microemu.orientation` is `landscape-flipped` (`microset get`, 5 s), else no `ORIENTATION` and gamescope takes landscape from the panel's DT `rotation`. The launcher sources this file after `device-quirks`, so the value wins |
+| `microemu-gamescope` | Drops `--steam` and execs `/usr/bin/gamescope`. Without `--steam`, gamescope focuses ES-DE and the windows it starts with no `STEAM_GAME` atoms. |
+| `microemu-client` | Runs `microemu-game-stop`, writes `~/.local/share/microemu/ES-DE/custom_systems/es_systems.xml` from the shipped file (the `microos` path filled in) and removes `es_find_rules.xml` there, links the shipped themes, reconciles the ES-DE settings, writes the BOOT INTO entries, starts `microemu-osd` and runs `/usr/bin/es-de` with `ESDE_APPDATA_DIR=~/.local/share/microemu/ES-DE`. When `/var/lib/microos/openh264/libopenh264.so.8` exists at that moment, ES-DE alone gets that dir prepended to `LD_LIBRARY_PATH` (H.264 video previews; MicroOS downloads Cisco's openh264 on the device). When ES-DE exits while a game runs (`microemu-game-running`), it waits for the game to end, checking every second. Then, with the unit `deactivating`, it blocks in `sleep infinity`; otherwise (Quit, crash, missing) it runs `microos-session back`, retries once after 2 s, then blocks; after a second failure it exits 1. |
+| `microemu-stop` | `ExecStop` of the session, bounded at 15 s: `microemu-game-stop`, then SIGTERM to the `/usr/bin/es-de` process in the session's cgroup every 500 ms, up to 6 times or until it exits. |
+| `microemu-game-stop` | Runs every executable in `/usr/libexec/microemu/game-stop.d/` within 5 s of boottime in total, then `reset-failed`, `stop`, `reset-failed` of `microemu-game.scope`. |
+| `microemu-pad xb360` | Sets every InputPlumber composite device to `xb360` plus `keyboard` when InputPlumber takes its bus name, and each composite device InputPlumber adds after that (`InterfacesAdded`). Runs as long as the session (`microemu-pad.service`, bound to it, `After=` steamos-manager, restarted on failure). `deck-uhid` has no evdev pad while the Steam client is not running, so RetroArch reads the Xbox 360 pad. |
 | `30-microemu-stop.conf` | `ExecStop=-microemu-stop`, `ExecStopPost=-microemu-game-stop`, `TimeoutStopSec=25`, `TimeoutStopFailureMode=terminate`. |
 
-ES-DE loads only microemu's systems: `/usr/share/microemu/es-de/es_systems.xml` has a top level `<loadExclusive/>` before `<systemList>`, and every
-command in it is a `/usr/libexec/microemu/` wrapper. ES-DE's settings, game lists and media
-live in `~/.local/share/microemu/ES-DE`; `~/ES-DE` is not used. The controller type goes back to the configured one when
-session-control switches to game mode.
+ES-DE loads only these systems: the shipped `es_systems.xml` has `<loadExclusive/>` before `<systemList>`, and every
+game command is the RetroArch wrapper.
+
+### BOOT INTO
+
+The `microos` system ("Boot Into") lists `$XDG_RUNTIME_DIR/microemu/microos/<name>.session`, one per session with
+`DEFAULT` yes in `microos-session list`, rewritten at every client start, with the session labels in
+`gamelists/microos/gamelist.xml`. Its command is `microos-session set-default %BASENAME%`.
+
+## Keys
+
+hotkeyd tables, read by MicroOS's `microos-hotkeyd`:
+
+| File | Rows |
+|---|---|
+| `hotkeys.d/microemu.conf` | `lc hold unit microemu-lc.service`, `volup press volume up`, `voldown press volume down` |
+| `hotkeys.d/steam.conf.d/50-microemu.conf` | `lc hold switch microemu confirm-in-game` |
+| `hotkeys.d/microdap.conf.d/50-microemu.conf` | `lc hold switch microemu` |
+
+`microemu-lc` stops the game when `microemu-game-running` reports one, else runs `microos-session back`.
+`microemu-game-running` counts `microemu-game.scope` active, activating, reloading or deactivating, and the launch
+window: `$XDG_RUNTIME_DIR/microemu/launching` names the live RetroArch wrapper. In the launch window the LC hold also
+sends the wrapper SIGTERM, so the game never starts. The power key is hotkeyd's built in suspend. RetroArch's menu is on L3 + R3, so RC stays free.
+
+## Settings
+
+`/usr/share/microset/schema.d/50-microemu.json` (owner `microemu`, group `emulation`):
+
+| Key | Type, default | Written to |
+|---|---|---|
+| `microemu.orientation` | s, `landscape` `landscape-flipped`, `landscape` | read at session start |
+| `microemu.esde.theme`, `theme_color_scheme`, `theme_variant`, `theme_font_size`, `theme_aspect_ratio` | s, enum of the values Art Book Next and ES-DE's bundled `linear-es-de`, `modern-es-de`, `slate-es-de` declare in `capabilities.xml`; `art-book-next-es-de`, `dark-screenshots`, `gamelist-list-metadata-cover`, `medium`, `3:2` | `es_settings.xml` `Theme`, `ThemeColorScheme`, `ThemeVariant`, `ThemeFontSize`, `ThemeAspectRatio` |
+| `microemu.retroarch.<key>` | below | `retroarch.cfg` `<key>` |
+| `microemu.core.bsnes_mercury.video_threaded`, `nestopia.`, `pcsx_rearmed.` | b, false | `config/<core>/<core>.cfg` `video_threaded` |
+
+| RetroArch key | Type | Default |
+|---|---|---|
+| `video_driver` | s, `vulkan` `glcore` `gl` `gl1` `sdl2` `x11` `xvideo` `drm` | `vulkan` |
+| `video_scale_integer` | b | false |
+| `audio_block_frames` | u, 0 to 65536 | 192 |
+| `fps_show`, `video_shader_enable` | b | true |
+| `sort_savefiles_enable`, `sort_savestates_enable` | b | true |
+| `savestate_auto_index`, `savestate_auto_load`, `savestate_auto_save` | b | true |
+| `savestate_max_keep` | u, 0 to 999 | 10 |
+| `quit_on_close_content` | u, 0 to 2 | 1 |
+| `quit_press_twice` | b | false |
+| `menu_shader_pipeline` | u, 0 to 6 | 1 |
+| `input_player1_analog_dpad_mode` | u, 0 to 4 | 1 (left stick as the d-pad) |
+
+The values are BruhMeh's [Ayaneo-Handheld-Scripts](https://github.com/BruhMeh/Ayaneo-Handheld-Scripts) at `168d1c9`
+(`retro_arch_common_auto_config.sh`), with RGUI, per core run ahead and rewind, per core save folders and
+`video_scale_integer` false (games fill the 640 px height).
+
+`microemu-reconcile esde <settings dir>` (client) and `microemu-reconcile retroarch <config dir>` (wrapper, after the
+scope wait) run at every launch. For each key with a `file` and `setting` in the schema file, the values compare as the
+schema type (RetroArch's `"3.000000"` is 3), against the value last written, kept in
+`~/.local/state/microemu/written.json`:
+
+- The file differs from the last written value: the app's menu changed it. It is `Set` into MicroSET and kept. When
+  MicroSET changed too, the file still wins and the conflict is logged. A value MicroSET refuses stays in the file, the
+  old `written.json` entry stays and the refusal is logged.
+- Otherwise the MicroSET value goes into the file (a missing key is added).
+- No `written.json`, or no entry for the key: MicroSET wins.
+- `microsetd` down: nothing changes, one log line.
+- A value holding `"`, a CR or a LF, read from the file or from MicroSET: the key is skipped and logged, nothing
+  written. Every string key is an enum, so MicroSET never serves one.
+
+`written.json` is updated after each key. Files are replaced through a temp file in the same dir, written through when
+they are symlinks. App menu edits stay; MicroSET changes land at the next launch.
 
 ## RetroArch
 
-Fedora 44 `retroarch-1.22.0-20.fc44`, `mbedtls-3.6.7-1.fc44` and 13 `libretro-*` core rpms, unmodified, fetched from
-koji by `build/retroarch.sh` (sha256 pinned, cached in `build/cache/retroarch/`, 9.6 MB of rpms) and unpacked with
-`rpm2cpio`:
-
-| Path | From |
-|---|---|
-| `/usr/lib/microemu/retroarch/bin/retroarch` | `retroarch` |
-| `/usr/lib/microemu/retroarch/lib64/libmbed*.so.*` | `mbedtls` (the only RetroArch dependency missing on the image) |
-| `/usr/lib64/libretro/<core>_libretro.so` | the core rpms |
-| `/usr/share/microemu/retroarch/info/<core>_libretro.info` | `retroarch`, for the 13 cores |
-| `/usr/share/microemu/retroarch/autoconfig/udev/` | `retroarch` (pad profiles, `Microsoft X-Box 360 pad.cfg` among them) |
-| `/usr/share/licenses/microemu/<rpm>/` | every license file of each rpm |
-| `/usr/share/microemu/retroarch/shaders/shaders_slang/` | `build/shaders.sh`: 42 files of libretro's [slang-shaders](https://github.com/libretro/slang-shaders) at `e1d75632a205c70f14a4cc947c46d5abb7b3f7f1` (each fetched from that commit and checked against its own sha256) and the 1080p Flat and 4K Flat NES and SNES Clean presets of [Retro Crisis GDV-NTSC](https://github.com/RetroCrisis/Retro-Crisis-GDV-NTSC) `20260321` (zip sha256 pinned), cached in `build/cache/shaders/`; the build fails when a shipped preset or shader references a missing file |
-| `/usr/share/microemu/retroarch/shaders/presets/<core>/<core>.slangp` | microemu's core presets, read only |
-| `/usr/share/licenses/microemu/slang-shaders/AUDIT`, `retro-crisis/LICENSE` | the license each shipped shader file states (several state none), Retro Crisis's GPL-3.0 |
-
-Cores: `stella2014`, `prosystem`, `handy`, `nestopia`, `bsnes_mercury_performance`, `gambatte`, `mgba`, `gw`,
-`mednafen_ngp`, `mednafen_pce_fast`, `pcsx_rearmed`, `mednafen_vb`, `mednafen_wswan`.
-
 `/usr/libexec/microemu/bin/retroarch -L /usr/lib64/libretro/<core>_libretro.so <rom>` is the only way ES-DE starts
-RetroArch. It exits 1 with a log line unless `gamescope-session-plus@microemu.service` is active, and unless there is
-exactly one `-L` naming a core directly under `/usr/lib64/libretro/`; it refuses `--libretro`, `--config`,
-`--appendconfig` and any short option cluster holding `L` or `c` other than the one `-L`. Then it creates `~/.config/microemu/retroarch/retroarch.cfg` (when absent) and the data directories,
-applies the defaults and copies the core files (below), unsets `LD_LIBRARY_PATH`, runs `microemu-game-free` (waits up to 8 s
-while `microemu-game.scope` is still stopping, then `reset-failed`; otherwise exit 1, `microemu-game.scope is still
-stopping`) and
+RetroArch. It exits 1 with a log line unless `gamescope-session-plus@microemu.service` is active, and unless the
+arguments are exactly `-L`, a core directly under `/usr/lib64/libretro/` and an absolute ROM path, which is what ES-DE
+passes. It writes its PID to `$XDG_RUNTIME_DIR/microemu/launching` and removes the file when it exits. It drops `/var/lib/microos/openh264` from `LD_LIBRARY_PATH` (unset when nothing else is left). Then it creates
+`~/.config/microemu/retroarch/retroarch.cfg` (when absent) and the data dirs, copies the core files and remaps (below)
+when missing, runs `microemu-game-free` (waits up to 8 s of boottime while `microemu-game.scope` is still stopping), the
+reconcile, and runs, waiting for it,
 
 ```
 systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
     --property=BindsTo=gamescope-session-plus@microemu.service --property=After=gamescope-session-plus@microemu.service \
-    --property=TimeoutStopSec=5 -- /usr/bin/env LD_LIBRARY_PATH=/usr/lib/microemu/retroarch/lib64 \
-    /usr/lib/microemu/retroarch/bin/retroarch -c ~/.config/microemu/retroarch/retroarch.cfg \
+    --property=TimeoutStopSec=5 -- /usr/bin/retroarch -c ~/.config/microemu/retroarch/retroarch.cfg \
     --appendconfig /usr/share/microemu/retroarch/microemu.cfg -L <core> <rom>
 ```
 
-ES-DE waits for it; its exit code is the game's. `microemu.cfg` is applied over `~/.config/microemu/retroarch/retroarch.cfg` at every launch:
-`menu_driver = "rgui"` (no assets), `video_fullscreen = "true"` (the 960x640 output; windowed, RetroArch sizes the
-window from `video_scale`), `desktop_menu_enable = "false"` (Fedora's build has Qt 6 and with it on builds the Qt
-desktop companion at every start, which crashed about 1 in 3 starts), `input_menu_toggle = "f15"` (RC), `autosave_interval = "10"`, online and core
-updaters hidden, cores, info and pad profiles from the paths above, the `udev` input and joypad drivers (under the
-`x` input driver gamescope turns RC's F15 into `XF86Launch6`, which RetroArch does not map to `f15`), saves, states, system
-(BIOS) files, screenshots, remaps, playlists, logs, thumbnails, core assets (`downloads`) and cache under
-`~/.local/share/microemu/retroarch/`, the config dir `~/.config/microemu/retroarch/config` and the shader dir
+ES-DE waits for it; its exit code is the game's. `microemu.cfg` is applied over `retroarch.cfg` at every launch:
+`menu_driver = "rgui"`, `video_fullscreen = "true"`, `desktop_menu_enable = "false"` (Fedora's build crashed about 1 in
+3 starts with the Qt companion on), `input_menu_toggle = "nul"` and `input_menu_toggle_gamepad_combo = "2"` (L3 + R3),
+`autosave_interval = "10"`, online and core updaters hidden, Fedora's cores, info and pad profiles, the `udev` input and
+joypad drivers, saves, states, system (BIOS) files, screenshots, remaps, playlists, logs, thumbnails, core assets and
+cache under `~/.local/share/microemu/retroarch/`, the config dir `~/.config/microemu/retroarch/config` and the shader dir
 `/usr/share/microemu/retroarch/shaders`.
-
-Defaults, from `/usr/share/microemu/retroarch/defaults` (`<version> <target> <key> <from> <value> [present]`, the target
-`retroarch.cfg` or a core's override `config/<core>/<core>.cfg`): for each version with no
-`~/.config/microemu/retroarch/.defaults-<n>` yet, a launch sets each of its keys that is still at `<from>` (and, without
-`present`, a missing one), leaves any other value, then writes the marker. A new line always takes a version higher than
-any used before; a used number such as 2 or 3 is never reused, since its marker may already exist. The values are the scripts'
-`retro_arch_common_auto_config.sh`:
-
-| Key | Value |
-|---|---|
-| `video_driver` | `vulkan` |
-| `fps_show`, `video_shader_enable` | `true` |
-| `audio_block_frames` | `192` |
-| `sort_savefiles_enable`, `sort_savestates_enable` | `true` (RetroArch's own default: saves and states per core) |
-| `savestate_auto_index`, `savestate_auto_load`, `savestate_auto_save` | `true` |
-| `savestate_max_keep` | `10` |
-| `quit_on_close_content`, `quit_press_twice` | `1`, `false` (closing content returns to ES-DE) |
-| `menu_shader_pipeline` | `1` |
-
-Version 4 replaces values earlier microemu builds wrote, only where they are still those values: `video_driver`
-`glcore`, `audio_block_frames` `0`, `savestate_max_keep` `0` and `menu_shader_pipeline` `2` in `retroarch.cfg`, and
-`video_threaded = "true"` in the bsnes-mercury, PCSX ReARMed and Nestopia overrides (set to `false`). Version 5 sets
-`video_scale_integer` from the scripts' `true` to `false`: games fill the 640 px height at the core's aspect ratio.
-Version 6 sets `input_player1_analog_dpad_mode` to `1` when missing or `0`: the left stick works as the d-pad, except
-in a core that asks for analog input (PCSX ReARMed with a DualShock).
-
-From the scripts and not applied: Ozone (microemu's menu is RGUI), run ahead and rewind as global keys (per core here),
-`sort_*_by_content_enable` (saves stay per core), device vibration and the Android download steps.
-`run_ahead_secondary_instance` keeps RetroArch's default `true`, as the script's line (two spaces before `=`) leaves
-it; `input_overlay_enable` (`false`), `quick_menu_show_shaders`, `auto_shaders_enable` and
-`video_shader_preset_save_reference_enable` (`true`) are already at the scripts' values.
 
 The pad is InputPlumber's Xbox 360 pad, which RetroArch maps by position (the bottom button is RetroPad B). Core
 remaps under `/usr/share/microemu/retroarch/remaps/<core>/` are copied to `~/.local/share/microemu/retroarch/remaps/<core>/`
 when missing and swap A and B for mGBA, Gambatte, Nestopia, Beetle VB and Game & Watch, and A, B, X and Y for
-bsnes-mercury, so the pad's labels match the console's. PS1 and the other cores stay by position.
+bsnes-mercury, so the pad's labels match the console's.
+
+Core files under `/usr/share/microemu/retroarch/config/<core>/` are copied to `~/.config/microemu/retroarch/config/<core>/`
+when missing: `Gambatte.opt` (accurate GBC color correction, LCD ghosting, `GBC - Pastel Mix` palette, boot ROM when
+`gb_bios.bin` or `gbc_bios.bin` is in the system dir), `mGBA.opt` (`mgba_interframe_blending = "mix_smart"`), and
+`<core>.cfg` with one frame of run ahead and rewind (granularity 15, muted) for Gambatte, mGBA, Nestopia, Stella 2014,
+ProSystem, Handy, Beetle NeoPop, Beetle PCE Fast, Beetle VB, Beetle WonderSwan and Game & Watch, rewind only for
+bsnes-mercury (its save states are not deterministic). Core presets in the shader dir's `presets/<core>/`: Nestopia
+Retro Crisis GDV-NTSC `1080p Flat/RC GDV-NTSC - NES - Clean`, bsnes-mercury `1080p Flat/RC GDV-NTSC - SNES - Clean`.
+`crt-guest-advanced-fast`, `crt-guest-advanced-fastest` and the 4K Flat Clean presets ship for Quick Menu > Shaders.
+
+`shaders.sh` installs 37 files of libretro's [slang-shaders](https://github.com/libretro/slang-shaders) at
+`e1d75632a205c70f14a4cc947c46d5abb7b3f7f1` and four presets of [Retro Crisis
+GDV-NTSC](https://github.com/RetroCrisis/Retro-Crisis-GDV-NTSC) `20260321`, each against its sha256; the install fails
+when a shipped preset or shader references a missing file. `shaders-audit` lists the license each file states. The LCD
+grid and pixel transparency shaders state no license, so they and the Gambatte and mGBA LCD presets are not shipped.
 
 A game resumes from its last auto state, so an in game save made after that state can be lost when RetroArch is killed
 instead of quit.
-
-Core files under `/usr/share/microemu/retroarch/config/<core>/` are copied to `~/.config/microemu/retroarch/config/<core>/`
-when missing, never over a file that exists: `Gambatte.opt` (accurate GBC color correction, LCD ghosting, `GBC - Pastel
-Mix` palette, boot ROM when `gb_bios.bin` or `gbc_bios.bin` is in the system dir), `mGBA.opt`
-(`mgba_interframe_blending = "mix_smart"`), and `<core>.cfg` with one frame of run ahead and rewind (granularity 15,
-muted) for Gambatte, mGBA, Nestopia, Stella 2014, ProSystem, Handy, Beetle NeoPop, Beetle PCE Fast, Beetle VB, Beetle
-WonderSwan and Game & Watch, rewind only for bsnes-mercury (its save states are not deterministic, so RetroArch turns
-run ahead off); PCSX ReARMed gets none. RetroArch loads core presets from
-the shader dir's `presets/<core>/` after a preset of the same name in the config dir: Gambatte LCD grid with pixel transparency,
-mGBA LCD grid with SP101 color, Nestopia Retro Crisis GDV-NTSC `1080p Flat/RC GDV-NTSC - NES - Clean`, bsnes-mercury
-`1080p Flat/RC GDV-NTSC - SNES - Clean` (the presets the scripts' `nestopia_auto_config.sh` and `bsnes_auto_config.sh`
-reference). `crt-guest-advanced-fast`, `crt-guest-advanced-fastest` and the 4K Flat Clean presets ship too, for Quick
-Menu > Shaders. A preset saved from
-the menu goes to the config dir, since the shader dir is read only. The settings follow BruhMeh's
-[Ayaneo-Handheld-Scripts](https://github.com/BruhMeh/Ayaneo-Handheld-Scripts) at `168d1c9`.
 
 ES-DE systems, each with the bundled 3.5.0 system's name, path (`%ROMPATH%/<name>`, `~/ROMs/<name>` by default),
 extensions, platform and theme:
@@ -172,7 +174,43 @@ extensions, platform and theme:
 | `virtualboy` | `mednafen_vb` |
 | `wonderswan`, `wonderswancolor` | `mednafen_wswan` |
 
+## Theme
+
+[Art Book Next (ES-DE Edition)](https://github.com/anthonycaccese/art-book-next-es-de) by Anthony Caccese, at
+`d772d07109701d9bd7c9fda305bfef6601105ab8`, unmodified. `theme.sh` fetches the GitHub archive (sha256 pinned) and
+unpacks it to `/usr/share/microemu/es-de/themes/art-book-next-es-de/`, dirs 0755 and files 0644. The README's Credits and License sections go to
+`/usr/share/licenses/microemu/art-book-next.txt`.
+
+`microemu-client` links every theme there into `~/.local/share/microemu/ES-DE/themes/`, replacing a link or file of the
+same name; a real directory of that name is kept and logged.
+
+## Volume Pill
+
+`/usr/libexec/microemu/microemu-osd`, started by `microemu-client` with `GDK_BACKEND=x11` (python3, GTK 3, cairo,
+Pango, `NO_AT_BRIDGE=1`). It runs `pactl subscribe` and on each `change` event of a sink or the server reads `wpctl
+get-volume @DEFAULT_AUDIO_SINK@` (0 to 100, 0 when muted); a level that differs from the last shows the pill. When
+`pactl subscribe` ends it starts again 2 s later. The pill is the top row style of Art Book Next (`systemstatus`, 3:2,
+medium font size): `111111ee`, radius 0.01 W, the speaker glyph and `N%` (`X` at 0) in `ffffff` Mulish Light, 0.7 of a
+0.0417 H row, padding 0.0097 W left, 0.0109 W right and 0.0104 H top and bottom, the text cell as wide as `100%`. It sits
+on the system status row, 0.005 W left of where ES-DE's status pill starts with every entry shown. It stays 1000 ms after
+the last change, then fades out in 250 ms.
+
+The window is the root's size, transparent outside the pill, with an empty input shape, `STEAM_OVERLAY=1` and no
+focus, so gamescope draws it over ES-DE and games and input stays with the app. It is mapped only while the pill shows.
+The font comes from the theme's `_inc/fonts` through `$XDG_RUNTIME_DIR/microemu/osd-fonts.conf`. The glyph is
+`/usr/share/microemu/osd/speaker.svg`, Art Book Next (Batocera Edition)'s `menu-icon-sound.svg`, fetched by `osd.sh`
+at a pinned revision and sha256. `microemu-osd --render <png> <width> <height> <level> [<alpha>]` draws one frame.
+
+## Tests
+
+`just test` runs the session, client, reconcile, RetroArch, OSD and asset tests; `just test-android` the Android ones.
+`osd-test.sh` renders the pill when `dist/` holds the theme fonts and `speaker.svg` (`just install` first;
+`MICROEMU_OSD_TEST_THEME` and `MICROEMU_OSD_TEST_SPEAKER` override). The test pin overrides of `shaders.sh`, `osd.sh`,
+`stub.sh` and `microemu-gapps-install` apply only with `MICROEMU_TEST=1`.
+
 ## Android
+
+Not installed. The pieces stay under `android/data/` with the paths they would install at; `game-stop.d/50-android` and the `androidgames` system are left out of `data/`.
 
 The `androidgames` system lists `.apk`, `.play` and `.update` files under `~/ROMs/androidgames/` and runs `/usr/libexec/microemu/microemu-apk
 <apk>`. Every Android game runs in one persistent Lepton context, `microemu-play`
@@ -405,165 +443,11 @@ file exists under `~/ROMs/androidgames/`, then the marker (also when a `.update`
 stays deleted. `microemu-play-reset --gapps` also removes `~/.local/share/microemu/gapps/`, `Google Play.play` and
 `Update Google Play.update`.
 
-## Theme
-
-[Art Book Next (ES-DE Edition)](https://github.com/anthonycaccese/art-book-next-es-de) by Anthony Caccese, at
-`d772d07109701d9bd7c9fda305bfef6601105ab8`, unmodified. `build/theme.sh` fetches the GitHub archive tarball (sha256
-pinned, 219247637 bytes, cached in `build/cache/theme/`) and unpacks it to
-`/usr/share/microemu/es-de/themes/art-book-next-es-de/` (227 MB). The README's Credits and License sections go to
-`/usr/share/licenses/microemu/art-book-next.txt`.
-
-`microemu-client` links every theme there into `~/.local/share/microemu/ES-DE/themes/`, replacing a link or file of the
-same name; a real directory of that name (a copy put there by hand) is kept and logged, other themes stay. It adds these
-keys to `~/.local/share/microemu/ES-DE/settings/es_settings.xml` when they are missing, so later changes in ES-DE's
-menu stay:
-
-| Key | Value |
-|---|---|
-| `Theme` | `art-book-next-es-de` |
-| `ThemeColorScheme` | `dark-screenshots` |
-| `ThemeVariant` | `gamelist-list-metadata-cover` |
-| `ThemeFontSize` | `medium` |
-| `ThemeAspectRatio` | `3:2` |
-| `ApplicationUpdaterFrequency` | `never` (no online update check at start; microemu pins ES-DE) |
-
-## Keys
-
-`microemu-hotkeyd.service`, a user unit kept up by `Upholds=` from `default.target.d/50-microemu.conf`, reads `KEY_F14`
-(LC, `MICROEMU_HOTKEYD_KEY` overrides) on `InputPlumber Keyboard` and the volume keys on `gpio-keys` and `pm8941_resin`
-with non grabbing `evtest`. A hold is 1000 ms, timed from the press event; a release without a press is dropped.
-
-| Session at the hold | LC hold |
-|---|---|
-| game mode | buzz, `systemctl --no-block start armada-session-switch@microemu.service` |
-| game mode, a title running (`SteamLaunch AppId=`) | first hold logged; a second within 3 s switches |
-| microemu, `microemu-game.scope` active, or `microemu-play.service` active, booting or stopping | buzz, `microemu-game-stop` in the background; holds while it runs are dropped |
-| microemu | buzz, `microemu-leave session` |
-| microdap | logged, ignored |
-| Plasma (`plasmashell` running) | buzz, switch to microemu |
-| anything else | logged, ignored |
-
-Before acting, the daemon checks `/run/armada/session-switch.lock` with `flock -n -E 75`; exit 75 (held) drops the hold
-with no buzz (`switch in progress, hold dropped`), any other error is logged and the lock taken as free, a missing
-lock file counts as free. It keeps the last time it saw the lock held and the time the last game stop
-ended, and drops any press whose event time is at or before either. Taps do nothing.
-
-Volume keys act only in the microemu session. Each press adds 5%, a held key repeats after 400 ms, then every 100 ms.
-One `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ <n>%+` (or `-`) runs at a time; steps that arrive meanwhile go into
-the next call as one sum. After each call, while `$XDG_RUNTIME_DIR/microemu/osd` is a FIFO, a background job reads
-`wpctl get-volume @DEFAULT_AUDIO_SINK@` and writes the level (0 to 100, 0 when muted) to it with a non blocking open;
-with no reader or a full pipe the line is dropped. One read runs at a time; a call that ends meanwhile gets a new read
-after it, so the last line is the latest level.
-
-## Volume pill
-
-`/usr/libexec/microemu/microemu-osd`, started by `microemu-client` before ES-DE with `GDK_BACKEND=x11` (python3, GTK 3,
-cairo, Pango; no accessibility bridge, `NO_AT_BRIDGE=1`). It replaces whatever is at `$XDG_RUNTIME_DIR/microemu/osd` with a FIFO and reads levels from it. Each level
-shows a pill in the top row style of Art Book Next (`systemstatus`, 3:2, medium font size): `111111ee`, radius
-0.01 W, the speaker glyph and `N%` (`X` at 0) in `ffffff` Mulish Light, 0.7 of a 0.0417 H row, padding 0.0097 W left,
-0.0109 W right and 0.0104 H top and bottom, the text cell as wide as `100%`. It sits on the system status row, 0.005 W
-(ES-DE's entry spacing) left of where ES-DE's status pill starts with every entry shown (Bluetooth, Wi-Fi, cellular,
-battery and its percentage). It stays 1000 ms after the last level, then fades out in 250 ms.
-
-The window is the root's size, transparent outside the pill, with an empty input shape, `STEAM_OVERLAY=1` (set with
-`xprop` before the first map) and no focus, so gamescope draws it 1:1 over ES-DE and games as its overlay and input
-stays with the app. It is mapped only while the pill shows. The font comes from the shipped theme's `_inc/fonts`
-through `$XDG_RUNTIME_DIR/microemu/osd-fonts.conf` (the system config plus that dir), set for this process only. The
-glyph is `/usr/share/microemu/osd/speaker.svg`, Art Book Next (Batocera Edition)'s `menu-icon-sound.svg`, fetched by
-`build/osd.sh` at a pinned revision and sha256. If `microemu-osd` exits, the client logs `microemu-osd exited with <rc>`
-and the session goes on without it. `microemu-osd --render <png> <width> <height> <level> [<alpha>]` draws one frame
-to a PNG.
-
-The buzz is 15 ms through `org.shadowblip.Output.ForceFeedback` on every composite device. Dry run: drop-in
-`~/.config/systemd/user/microemu-hotkeyd.service.d/dryrun.conf` with `Environment=MICROEMU_HOTKEYD_DRY_RUN=1` logs `would:`
-lines instead of acting. Without `InputPlumber Keyboard` after 15 s the daemon exits 0 and systemd restarts it 10 s later
-(`RestartSec=10`); the same when the key stream ends. A volume stream that ends stops a running repeat.
-
-## Guard
-
-`microemu-guard.service`, a user oneshot wanted by `default.target` (`default.target.d/50-microemu.conf`), runs at each
-login and after every dev loop. A user unit, because systemd's user manager starts after `systemd-sysext.service` merged the
-extension. On systemd 259 `systemd-sysext refresh` reloads the service manager only when a merged extension-release
-sets `EXTENSION_RELOAD_MANAGER=1`, so a system unit pulled in by a sysext `multi-user.target.d` drop-in would not load
-at that boot without the key. microemu ships no system unit that has to run at boot, so `extension-release.microemu` does
-not set it. It checks:
-
-- `/usr/libexec/armada/session-control list-sessions` runs and prints `microemu` (drop-in support on the image, the
-  microemu drop-in accepted).
-- No path in `/usr/share/microemu/paths` exists in the booted deployment (resolved from `ostree=` on the kernel command
-  line under `/sysroot`, its `usr/lib/os-release` required), and none in another extension under
-  `/var/lib/extensions/`. Only directory extensions are scanned; `.raw` images are logged as not checked.
-
-Each problem is a `user.warning` journal line (`journalctl --user -t microemu-guard`) and a line in
-`$XDG_RUNTIME_DIR/microemu/drift`; a clean run logs `no drift` and leaves no file. `just test-paths` compares `dist/`
-with microdap's `dist/` (`MICRODAP_DIST`, default `../MicroDAP/dist`) at build time.
-
-## Builder
-
-The builder container is `FROM` the exact Armada image the device runs, pinned by digest in `build/base.env`
-(`20261011.b995457`, the first with session drop-in support, the digest microdap pins). The image already carries what the build uses (`curl`, `sha256sum`,
-`od`, `dd`, `du`, `unsquashfs`, `mksquashfs`, `rpm`, `rpm2cpio`, `cpio`, `tar`, `unzip`); the Containerfile adds
-`java-25-openjdk-devel` for the restrictions stub. Build host is any podman on arm64, or with an arm64 binfmt
-registered with the `F` flag (without it, mount the interpreter into the container, `podman build --volume` and
-`podman run -v` both).
-
-## Recipes
-
-| Recipe | Does |
-|---|---|
-| `just base` | Reads `IMAGE_VERSION`, `VERSION_ID` and the booted image digest from the device into `build/base.env`. |
-| `just dist` | Builds the builder image and runs `build/build.sh`: checks the builder's `IMAGE_VERSION` and `VERSION_ID` and the `VERSION_ID` in `extension-release.microemu` against `base.env`, and the extension `ID` against the builder's, copies `sysext/`, runs `build/esde.sh`, `build/retroarch.sh`, `build/theme.sh` and `build/stub.sh`, writes `version` and `build-manifest`. |
-| `just build` | `dist` plus `microemu-<ver>-armada<VERSION_ID>-arm64.raw` (squashfs, zstd). |
-| `just dev` | Refuses when the device `IMAGE_VERSION`, `VERSION_ID` or digest differ from the manifest. Then rsyncs `dist/` to `/var/tmp/microemu/` and `build/device-apply` to `/var/tmp/microemu-apply` on the device and runs it as root: refuses unless `gamescope-session-plus@steam.service` is active (`MICROEMU_DEPLOY_ANY_SESSION=1` skips the check) and when `/var/lib/extensions/microemu.raw` exists, copies the stage to `/var/lib/extensions/microemu/` owned by root, runs `systemd-sysext refresh` and restarts polkit. Then `systemctl --user daemon-reload` and a restart of `microemu-hotkeyd.service` and `microemu-guard.service`. |
-| `just test-paths` | `tests/paths-test.sh` against microdap's `dist/`: fails on any path both ship. |
-| `just off` | Copies `build/device-off` to `/var/tmp/microemu-off` and runs it as root on the device. |
-| `just test` | `tests/build-test.sh`, `tests/device-apply-test.sh`, `tests/device-off-test.sh`, `tests/esde-test.sh`, `tests/session-test.sh`, `tests/systems-test.sh`, `tests/client-test.sh`, `tests/leave-test.sh`, `tests/stop-test.sh`, `tests/pad-test.sh`, `tests/hotkeyd-test.sh`, `tests/retroarch-test.sh`, `tests/game-free-test.sh`, `tests/retroarch-build-test.sh`, `tests/shaders-test.sh`, `tests/theme-test.sh`, `tests/play-unit-test.sh`, `tests/apk-test.sh`,
-`tests/sideload-test.sh`, `tests/android-hook-test.sh`, `tests/reset-test.sh`, `tests/pad-fuzz-test.sh`,
-`tests/stub-test.sh`, `tests/gapps-install-test.sh`, `tests/play-update-test.sh`, `tests/sync-test.sh` (the download pin overrides of `build/stub.sh`, `build/shaders.sh`
-and `microemu-gapps-install` apply only with `MICROEMU_TEST=1`), `tests/guard-test.sh`, `tests/paths-test.sh` (prints `skip` without `MICROEMU_OTHER_DIST`). |
-
-`MICROEMU_DEVICE` overrides `armada@pm2`. Root steps run through `ssh -t` and `sudo`.
-
-## Removal
-
-`build/device-off`, as root (exits 1 otherwise):
-
-1. Reads the `ActiveState` of `gamescope-session-plus@microemu.service` for the session account (`SUDO_USER`, else `armada`) at once and then every second up
-   to 60 s. The first time it reads `active` or `activating`, it starts `armada-session-switch@gamemode.service` with
-   `--no-block`.
-2. Goes on when the state is `inactive` or `failed`, or empty while `user@<uid>.service` is not active, and no
-   `/etc/sddm.conf.d/*.conf` has a `Session=microemu.desktop` line (whitespace and CR allowed). An empty state with
-   systemd's user manager up is a failed query and counts as running. On timeout it exits 1 and changes nothing.
-3. Stops `microemu-hotkeyd.service`, `microemu-pad.service`, `microemu-guard.service` and `microemu-play-update.service` as the account.
-4. Removes `/var/lib/extensions/microemu`, `/var/lib/extensions/microemu.raw`, `/run/microemu` and the account's
-   `$XDG_RUNTIME_DIR/microemu` only, then `systemd-sysext refresh`, `systemctl
-   daemon-reload` and `systemctl --user daemon-reload` as the account.
-5. Stops and resets `microemu-hotkeyd.service` again (`Upholds=` from `default.target` starts it again after step 3
-   while the unit is still merged) and resets `microemu-play-update.service`, which a stop leaves `failed`.
-6. `systemctl restart polkit`.
-
-Other extensions (microdap) stay merged. Commands for the account run through `runuser`
-with `XDG_RUNTIME_DIR` set.
-
-## Rebuild per Armada release
-
-Every Armada release (new digest or `VERSION_ID`) needs microemu rebuilt against it: `just base && just build`. A new
-`VERSION_ID` also goes into `sysext/usr/lib/extension-release.d/extension-release.microemu`; the build fails until it
-matches.
-
-## Install contract
-
-`systemd-sysext` merges an image only under the name in its `extension-release.<name>`, so the asset
-`microemu-<ver>-armada<VERSION_ID>-arm64.raw` goes to `/var/lib/extensions/microemu.raw`, or the `dist/` tree to
-`/var/lib/extensions/microemu/`, never both: remove the other form first (`just off` removes both; `device-apply`
-refuses a directory deploy beside `microemu.raw`). Then `systemd-sysext refresh`, `systemctl restart polkit` and, as `armada`, `systemctl --user daemon-reload`. Install and
-uninstall from game mode. Uninstall: `just off`, or
-the same steps as `build/device-off`.
 
 ## License
 
-GPL-2.0-or-later. See [LICENSE](LICENSE). ES-DE is MIT licensed. RetroArch, mbedtls and the cores keep their own
-licenses, shipped in `/usr/share/licenses/microemu/`. The Art Book Next theme is by Anthony Caccese and the people
-credited in `art-book-next.txt`, licensed CC BY-NC-SA 2.0; the volume glyph is from its Batocera Edition, credits in
-`art-book-next-speaker.txt`, same license (https://creativecommons.org/licenses/by-nc-sa/2.0/). Google's APKs are
-not shipped: `microemu-gapps-install` downloads them on the device.
+GPL-2.0-or-later, see [LICENSE](LICENSE). The Art Book Next theme is by Anthony Caccese and the people credited in
+`art-book-next.txt`, licensed CC BY-NC-SA 2.0; the volume glyph is from its Batocera Edition, credits in
+`art-book-next-speaker.txt`, same license (https://creativecommons.org/licenses/by-nc-sa/2.0/). The shaders keep the
+licenses in `shaders-audit`, Retro Crisis GPL-3.0. Google's APKs are not shipped: `microemu-gapps-install` downloads
+them on the device.

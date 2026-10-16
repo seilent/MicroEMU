@@ -1,0 +1,75 @@
+#!/usr/bin/bash
+set -eu
+
+SESSION=gamescope-session-plus@microemu.service
+BIN="${MICROEMU_RETROARCH_BIN:-/usr/bin/retroarch}"
+SHARE="${MICROEMU_RETROARCH_SHARE:-/usr/share/microemu/retroarch}"
+APPEND="${MICROEMU_RETROARCH_APPEND:-/usr/share/microemu/retroarch/microemu.cfg}"
+CONFIG="${MICROEMU_RETROARCH_CONFIG:-${HOME}/.config/microemu/retroarch/retroarch.cfg}"
+DATA="${MICROEMU_RETROARCH_DATA:-${HOME}/.local/share/microemu/retroarch}"
+GAME_FREE="${MICROEMU_GAME_FREE:-/usr/libexec/microemu/microemu-game-free}"
+RECONCILE="${MICROEMU_RECONCILE:-/usr/libexec/microemu/microemu-reconcile}"
+OPENH264="${MICROEMU_OPENH264_DIR:-/var/lib/microos/openh264}"
+RUNTIME="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}"
+MARKER="${RUNTIME}/launching"
+
+log() { logger -t microemu-retroarch -- "$*" 2>/dev/null || true; }
+
+copy_missing() {
+    local from=$1 to=$2 src dest
+    [[ -d "${from}" ]] || return 0
+    while IFS= read -r -d '' src; do
+        dest="${to}/${src#"${from}/"}"
+        [[ ! -e "${dest}" ]] || continue
+        mkdir -p "$(dirname "${dest}")"
+        cp "${src}" "${dest}"
+    done < <(find "${from}" -type f \( -name '*.opt' -o -name '*.cfg' -o -name '*.rmp' \) -print0)
+}
+
+refuse() {
+    log "$*"
+    echo "microemu-retroarch: $*" >&2
+    exit 1
+}
+
+systemctl --user is-active --quiet "${SESSION}" || refuse "${SESSION} is not active, refusing"
+
+if (( $# != 3 )) || [[ "$1" != -L ]]; then
+    refuse "only -L <core> <rom> is accepted"
+fi
+core=$2
+rom=$3
+[[ "${rom}" == /* ]] || refuse "rom ${rom} is not an absolute path"
+[[ "${core}" =~ ^/usr/lib64/libretro/[A-Za-z0-9_]+_libretro\.so$ ]] || refuse "core ${core} is not under /usr/lib64/libretro"
+
+mkdir -p "${RUNTIME}"
+echo "$$" > "${MARKER}"
+trap 'rm -f "${MARKER}"' EXIT
+trap 'exit 143' TERM
+
+mkdir -p "$(dirname "${CONFIG}")" "${DATA}/saves" "${DATA}/states" "${DATA}/system" "${DATA}/screenshots" \
+    "${DATA}/remaps" "${DATA}/playlists" "${DATA}/logs/runtime" "${DATA}/thumbnails" "${DATA}/downloads" "${DATA}/cache"
+[[ -e "${CONFIG}" ]] || : > "${CONFIG}"
+copy_missing "${SHARE}/config" "$(dirname "${CONFIG}")/config"
+copy_missing "${SHARE}/remaps" "${DATA}/remaps"
+if [[ -n "${LD_LIBRARY_PATH+x}" ]]; then
+    IFS=: read -r -a dirs <<< "${LD_LIBRARY_PATH}"
+    kept=()
+    for dir in "${dirs[@]}"; do
+        [[ "${dir}" == "${OPENH264}" ]] || kept+=("${dir}")
+    done
+    if (( ${#kept[@]} )); then
+        LD_LIBRARY_PATH=$(IFS=:; printf '%s' "${kept[*]}")
+        export LD_LIBRARY_PATH
+    else
+        unset LD_LIBRARY_PATH
+    fi
+fi
+"${GAME_FREE}" || refuse "microemu-game.scope is still stopping"
+"${RECONCILE}" retroarch "$(dirname "${CONFIG}")" || log "reconcile failed"
+systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
+    --property=BindsTo="${SESSION}" --property=After="${SESSION}" --property=TimeoutStopSec=5 \
+    -- "${BIN}" -c "${CONFIG}" --appendconfig "${APPEND}" -L "${core}" "${rom}" &
+rc=0
+wait "$!" || rc=$?
+exit "${rc}"

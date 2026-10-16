@@ -1,4 +1,0 @@
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
-RUN dnf5 -y install --setopt=install_weak_deps=False java-25-openjdk-devel && dnf5 clean all
-WORKDIR /work

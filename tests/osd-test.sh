@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-osd="${repo}/sysext/usr/libexec/microemu/microemu-osd"
+osd="${repo}/data/usr/libexec/microemu/microemu-osd"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
@@ -13,7 +13,13 @@ cat > "${T}/bin/xprop" <<'EOF'
 #!/usr/bin/bash
 echo "xprop $*" >> "${OSD_TEST_STATE}/xprop"
 EOF
-chmod 0755 "${T}/bin/xprop"
+cat > "${T}/bin/wpctl" <<'EOF'
+#!/usr/bin/bash
+echo "wpctl $*" >> "${OSD_TEST_STATE}/wpctl"
+cat "${OSD_TEST_STATE}/volume"
+exit "$(cat "${OSD_TEST_STATE}/wpctl_rc" 2>/dev/null || echo 0)"
+EOF
+chmod 0755 "${T}/bin/xprop" "${T}/bin/wpctl"
 
 cat > "${T}/glyph.svg" <<'EOF'
 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M 1 2 L 3.5 4 C 5 6 7 8 9 10 Z"/></svg>
@@ -30,7 +36,6 @@ PYTHONDONTWRITEBYTECODE=1 PATH="${T}/bin:${PATH}" OSD_TEST_STATE="${T}" MICROEMU
 import importlib.machinery
 import importlib.util
 import os
-import stat
 import sys
 
 path, tmp, theme, speaker = sys.argv[1:5]
@@ -47,16 +52,35 @@ def check(cond, message):
         failures.append(message)
 
 
-for line, want in [("0", 0), ("7", 7), ("42", 42), ("100", 100), ("101", None), ("1000", None), ("", None),
-                   ("4 2", None), ("-1", None), ("x", None), ("42 ", None)]:
-    check(osd.parse_level(line) == want, f"parse_level({line!r}) is {osd.parse_level(line)!r}, expected {want!r}")
+for text, want in [("Volume: 0.40\n", 40), ("Volume: 1.00\n", 100), ("Volume: 0.00\n", 0), ("Volume: 0.40 [MUTED]\n", 0),
+                   ("Volume: 1.50\n", 100), ("Volume: 0.055\n", 6), ("", None), ("Volume: x\n", None), ("junk", None)]:
+    check(osd.parse_volume(text) == want, f"parse_volume({text!r}) is {osd.parse_volume(text)!r}, expected {want!r}")
 check(osd.label(0) == "X" and osd.label(7) == "7%" and osd.label(100) == "100%", "label")
 
+for line, want in [("Event 'change' on sink #56", True), ("Event 'change' on server #4294967295", True),
+                   ("Event 'new' on sink-input #12", False), ("Event 'change' on sink-input #12", False),
+                   ("Event 'change' on source #3", False), ("Event 'remove' on sink #56", False), ("", False)]:
+    check(osd.volume_event(line) == want, f"volume_event({line!r}) is {osd.volume_event(line)!r}, expected {want!r}")
+
 lines = osd.Lines()
-check(lines.feed(b"42\n7") == [42], "lines: first complete line")
-check(lines.feed(b"0\n") == [70], "lines: partial line joined")
-check(lines.feed(b"junk\n100\n") == [100], "lines: garbage dropped")
-check(lines.feed(b"9" * 100) == [] and lines.feed(b"\n5\n") == [5], "lines: an over long partial line dropped")
+check(lines.feed(b"Event 'new' on sink-input #1\nEvent 'change' on si") is False, "lines: a partial event counted")
+check(lines.feed(b"nk #5\n") is True, "lines: partial event not joined")
+check(lines.feed(b"Event 'change' on source #3\n") is False, "lines: a source change counted")
+check(lines.feed(b"9" * 5000) is False and lines.feed(b"\nEvent 'change' on sink #1\n") is True, "lines: an over long partial line kept")
+
+for last, level, want in [(None, 40, (False, 40)), (40, 40, (False, 40)), (40, 45, (True, 45)), (45, None, (False, 45)),
+                          (45, 0, (True, 0)), (None, None, (False, None))]:
+    check(osd.step(last, level) == want, f"step({last}, {level}) is {osd.step(last, level)}, expected {want}")
+
+with open(os.path.join(tmp, "volume"), "w") as f:
+    f.write("Volume: 0.65\n")
+check(osd.read_level() == 65, "read_level from wpctl")
+with open(os.path.join(tmp, "wpctl")) as f:
+    check(f.read().strip() == "wpctl get-volume @DEFAULT_AUDIO_SINK@", "read_level: wpctl call")
+with open(os.path.join(tmp, "wpctl_rc"), "w") as f:
+    f.write("1")
+check(osd.read_level() is None, "read_level: a failed wpctl gave a level")
+os.unlink(os.path.join(tmp, "wpctl_rc"))
 
 fade = osd.Fade()
 check(fade.alpha(0) is None, "fade: hidden before a press")
@@ -83,26 +107,6 @@ try:
     failures.append("glyph: an arc command accepted")
 except ValueError:
     pass
-
-fifo = os.path.join(tmp, "run", "osd")
-os.makedirs(os.path.dirname(fifo), exist_ok=True)
-with open(fifo, "w") as f:
-    f.write("stale\n")
-fd = osd.open_fifo(fifo)
-check(stat.S_ISFIFO(os.stat(fifo).st_mode), "fifo: a regular file at the path not replaced")
-writer = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
-os.write(writer, b"57\n")
-check(osd.Lines().feed(os.read(fd, 64)) == [57], "fifo: line not read back")
-os.close(writer)
-try:
-    os.read(fd, 64)
-    failures.append("fifo: read returned with no writer instead of blocking")
-except BlockingIOError:
-    pass
-os.close(fd)
-fd = osd.open_fifo(fifo)
-check(stat.S_ISFIFO(os.stat(fifo).st_mode), "fifo: a stale fifo not recreated")
-os.close(fd)
 
 osd.set_overlay(0x400007)
 with open(os.path.join(tmp, "xprop")) as f:

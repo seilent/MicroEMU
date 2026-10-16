@@ -3,8 +3,8 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-apk="${repo}/sysext/usr/libexec/microemu/microemu-apk"
-watch="${repo}/sysext/usr/libexec/microemu/microemu-apk-watch"
+apk="${repo}/android/data/usr/libexec/microemu/microemu-apk"
+watch="${repo}/android/data/usr/libexec/microemu/microemu-apk-watch"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT

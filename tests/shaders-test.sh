@@ -24,7 +24,7 @@ sources() {
     while IFS= read -r path; do
         mkdir -p "$(dirname "${T}/slang/${path}")"
         case "${path}" in
-            *.slangp) printf 'shaders = "1"\nshader0 = "%s"\n' "$(realpath -m --relative-to="$(dirname "/x/${path}")" /x/handheld/shaders/lcd-cgwg/lcd-grid-v2.slang)" > "${T}/slang/${path}" ;;
+            *.slangp) printf 'shaders = "1"\nshader0 = "%s"\n' "$(realpath -m --relative-to="$(dirname "/x/${path}")" /x/crt/shaders/guest/advanced/stock.slang)" > "${T}/slang/${path}" ;;
             *) printf '#version 450\n// %s\n' "${path}" > "${T}/slang/${path}" ;;
         esac
     done <<< "${slang_paths}"
@@ -63,7 +63,7 @@ pins() {
 reset() {
     rm -rf "${T}/dist" "${T}/cache"
     mkdir -p "${T}/dist/usr/share/microemu/retroarch"
-    cp -a "${repo}/sysext/usr/share/microemu/retroarch/shaders" "${T}/dist/usr/share/microemu/retroarch/"
+    cp -a "${repo}/data/usr/share/microemu/retroarch/shaders" "${T}/dist/usr/share/microemu/retroarch/"
 }
 
 run() {
@@ -85,7 +85,7 @@ while IFS= read -r path; do
     [[ -f "${shaders}/shaders_slang/${path}" ]] || fail "${path} not installed"
 done <<< "${rc_paths}"
 [[ ! -e "${shaders}/shaders_slang/__MACOSX" ]] || fail "__MACOSX installed"
-[[ "$(find "${shaders}" -type f | wc -l)" == "$(( $(grep -c . <<< "${slang_paths}") + $(grep -c . <<< "${rc_paths}") + 4 ))" ]] \
+[[ "$(find "${shaders}" -type f | wc -l)" == "$(( $(grep -c . <<< "${slang_paths}") + $(grep -c . <<< "${rc_paths}") + 2 ))" ]] \
     || fail "unexpected files: $(find "${shaders}" -type f)"
 cmp -s "${audit}" "${T}/dist/usr/share/licenses/microemu/slang-shaders/AUDIT" || fail "audit not installed"
 grep -q "GNU GENERAL PUBLIC LICENSE" "${T}/dist/usr/share/licenses/microemu/retro-crisis/LICENSE" || fail "Retro Crisis license not installed"
@@ -93,11 +93,15 @@ grep -qx "SLANG_SHADERS_COMMIT=e1d75632a205c70f14a4cc947c46d5abb7b3f7f1" "${T}/o
 while IFS= read -r path; do
     grep -qF " ${path} |" "${audit}" || fail "${path} missing in the audit"
 done <<< "${slang_paths}"
+for path in handheld/shaders/lcd-cgwg/lcd-grid-v2.slang handheld/shaders/pixel_transparency/pixel_transparency.slang; do
+    grep -qxF "${path}" <<< "${slang_paths}" && fail "${path} has no license grant and is shipped"
+    grep -rqF "$(basename "${path}")" "${repo}/data" && fail "$(basename "${path}") referenced from data/"
+done
 
 rm -rf "${T}/slang.off"
 mv "${T}/slang" "${T}/slang.off"
 mv "${T}/rc.zip" "${T}/rc.zip.off"
-reset_keep_cache() { rm -rf "${T}/dist"; mkdir -p "${T}/dist/usr/share/microemu/retroarch"; cp -a "${repo}/sysext/usr/share/microemu/retroarch/shaders" "${T}/dist/usr/share/microemu/retroarch/"; }
+reset_keep_cache() { rm -rf "${T}/dist"; mkdir -p "${T}/dist/usr/share/microemu/retroarch"; cp -a "${repo}/data/usr/share/microemu/retroarch/shaders" "${T}/dist/usr/share/microemu/retroarch/"; }
 reset_keep_cache
 run
 [[ "${rc}" == 0 ]] || fail "cached rebuild needed the network: $(cat "${T}/err")"

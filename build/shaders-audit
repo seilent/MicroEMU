@@ -36,10 +36,5 @@ slang-shaders crt/shaders/guest/advanced/ntsc/ntsc-pass2.slang | no license stat
 slang-shaders crt/shaders/guest/advanced/ntsc/ntsc-pass3.slang | no license stated
 slang-shaders crt/shaders/guest/advanced/pre-shaders-afterglow.slang | Copyright (C) 2019-2025 guest(r) and Dr. Venom, GNU General Public License
 slang-shaders crt/shaders/guest/advanced/stock.slang | no license stated
-slang-shaders handheld/shaders/color/lut/sp101-grey.png | no license stated (data)
-slang-shaders handheld/shaders/color/sp101-color.slang | Public domain (Pokefan531, hunterk, crashGG)
-slang-shaders handheld/shaders/lcd-cgwg/lcd-grid-v2.slang | no license stated
-slang-shaders handheld/shaders/pixel_transparency/pixel_transparency.slang | Copyright (C) 2025-2026 Matt Akins, no license stated
-slang-shaders presets/handheld-plus-color-mod/lcd-grid-v2-sp101-color.slangp | no license stated (preset)
 slang-shaders reshade/shaders/LUT/64.png | no license stated (data)
 slang-shaders reshade/shaders/LUT/multiLUT.slang | no license stated

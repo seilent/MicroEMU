@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-wrapper="${repo}/sysext/usr/libexec/microemu/bin/retroarch"
+wrapper="${repo}/data/usr/libexec/microemu/bin/retroarch"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
@@ -11,7 +11,7 @@ mkdir -p "${T}/bin"
 export STATE="${T}/state"
 export MICROEMU_RETROARCH_CONFIG="${T}/config/microemu/retroarch/retroarch.cfg"
 export MICROEMU_RETROARCH_DATA="${T}/data/microemu/retroarch"
-export MICROEMU_RETROARCH_SHARE="${repo}/sysext/usr/share/microemu/retroarch"
+export MICROEMU_RETROARCH_SHARE="${repo}/data/usr/share/microemu/retroarch"
 share="${MICROEMU_RETROARCH_SHARE}"
 confdir="$(dirname "${MICROEMU_RETROARCH_CONFIG}")"
 
@@ -29,6 +29,7 @@ cat > "${T}/bin/systemd-run" <<'STUB'
 echo "systemd-run" >> "${STATE}/calls"
 printf '%s\n' "$@" > "${STATE}/argv"
 printf '%s\n' "${LD_LIBRARY_PATH-unset}" > "${STATE}/ld"
+cat "${MICROEMU_RUNTIME_DIR}/launching" > "${STATE}/marker-at-run" 2>/dev/null || echo none > "${STATE}/marker-at-run"
 exit "$(cat "${STATE}/rc")"
 STUB
 cat > "${T}/bin/logger" <<'STUB'
@@ -36,14 +37,23 @@ cat > "${T}/bin/logger" <<'STUB'
 shift 3
 echo "$*" >> "${STATE}/log"
 STUB
+cat > "${T}/bin/reconcile" <<'STUB'
+#!/usr/bin/bash
+echo "reconcile $*" >> "${STATE}/calls"
+exit "$(cat "${STATE}/reconcile_rc" 2>/dev/null || echo 0)"
+STUB
 cat > "${T}/bin/game-free" <<'STUB'
 #!/usr/bin/bash
 echo "game-free" >> "${STATE}/calls"
+[[ ! -e "${STATE}/game_free_sleep" ]] || /usr/bin/sleep "$(cat "${STATE}/game_free_sleep")"
 exit "$(cat "${STATE}/game_free_rc" 2>/dev/null || echo 0)"
 STUB
 chmod 0755 "${T}/bin/"*
 export PATH="${T}/bin:${PATH}"
 export MICROEMU_GAME_FREE="${T}/bin/game-free"
+export MICROEMU_RECONCILE="${T}/bin/reconcile"
+export MICROEMU_OPENH264_DIR=/var/lib/microos/openh264
+export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
 
 failures=0
 fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
@@ -67,7 +77,7 @@ ran() { grep -qx systemd-run "${STATE}/calls"; }
 mgba=/usr/lib64/libretro/mgba_libretro.so
 
 reset active
-run -L "${mgba}" "/home/armada/ROMs/gba/Some Game (USA).gba"
+run -L "${mgba}" "/home/micro/ROMs/gba/Some Game (USA).gba"
 [[ "${rc}" == 0 ]] || fail "launch exit ${rc}: $(cat "${STATE}/stderr")"
 expected="--user
 --scope
@@ -78,19 +88,20 @@ expected="--user
 --property=After=gamescope-session-plus@microemu.service
 --property=TimeoutStopSec=5
 --
-/usr/bin/env
-LD_LIBRARY_PATH=/usr/lib/microemu/retroarch/lib64
-/usr/lib/microemu/retroarch/bin/retroarch
+/usr/bin/retroarch
 -c
 ${MICROEMU_RETROARCH_CONFIG}
 --appendconfig
 /usr/share/microemu/retroarch/microemu.cfg
 -L
 ${mgba}
-/home/armada/ROMs/gba/Some Game (USA).gba"
+/home/micro/ROMs/gba/Some Game (USA).gba"
 [[ "$(cat "${STATE}/argv")" == "${expected}" ]] || fail "launch argv: $(cat "${STATE}/argv")"
-[[ "$(cat "${STATE}/ld")" == unset ]] || fail "launch: LD_LIBRARY_PATH reached systemd-run: $(cat "${STATE}/ld")"
-[[ "$(cat "${STATE}/calls")" == $'systemctl --user is-active --quiet gamescope-session-plus@microemu.service\ngame-free\nsystemd-run' ]] \
+[[ "$(cat "${STATE}/ld")" == /appimage/usr/lib ]] || fail "launch: LD_LIBRARY_PATH changed: $(cat "${STATE}/ld")"
+[[ "$(cat "${STATE}/calls")" == "systemctl --user is-active --quiet gamescope-session-plus@microemu.service
+game-free
+reconcile retroarch ${confdir}
+systemd-run" ]] \
     || fail "launch: calls $(cat "${STATE}/calls")"
 [[ -f "${MICROEMU_RETROARCH_CONFIG}" ]] || fail "launch: config not created"
 for dir in saves states system screenshots; do
@@ -100,70 +111,14 @@ done
 reset active
 mkdir -p "$(dirname "${MICROEMU_RETROARCH_CONFIG}")"
 echo 'video_driver = "gl"' > "${MICROEMU_RETROARCH_CONFIG}"
-for v in 1 4 5 6; do : > "${confdir}/.defaults-${v}"; done
 run -L "${mgba}" /rom.gba
 [[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == 'video_driver = "gl"' ]] || fail "existing config overwritten"
 
-seeded='video_driver = "vulkan"
-video_scale_integer = "false"
-audio_block_frames = "192"
-fps_show = "true"
-sort_savefiles_enable = "true"
-sort_savestates_enable = "true"
-savestate_auto_index = "true"
-savestate_auto_load = "true"
-savestate_auto_save = "true"
-savestate_max_keep = "10"
-quit_on_close_content = "1"
-quit_press_twice = "false"
-menu_shader_pipeline = "1"
-video_shader_enable = "true"
-input_player1_analog_dpad_mode = "1"'
-
 reset active
+echo 4 > "${STATE}/reconcile_rc"
 run -L "${mgba}" /rom.gba
-[[ "${rc}" == 0 ]] || fail "defaults on a fresh config: exit ${rc}"
-[[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == "${seeded}" ]] || fail "defaults on a fresh config: $(cat "${MICROEMU_RETROARCH_CONFIG}")"
-[[ -e "${confdir}/.defaults-1" && -e "${confdir}/.defaults-4" && -e "${confdir}/.defaults-5" && -e "${confdir}/.defaults-6" ]] || fail "defaults markers: $(ls -a "${confdir}")"
-
-reset active
-mkdir -p "${confdir}"
-printf 'aspect_ratio_index = "22"\nvideo_driver = "gl"\nvideo_scale_integer = "false"\naudio_block_frames = "0"\nfps_show = "false"\nsort_savefiles_enable = "true"\nsort_savestates_enable = "true"\nsavestate_auto_index = "false"\nsavestate_auto_load = "false"\nsavestate_auto_save = "false"\nsavestate_max_keep = "0"\nquit_on_close_content = "0"\nquit_press_twice = "true"\nmenu_shader_pipeline = "2"\nvideo_shader_enable = "false"\nvideo_threaded = "false"\n' > "${MICROEMU_RETROARCH_CONFIG}"
-run -L "${mgba}" /rom.gba
-[[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == "aspect_ratio_index = \"22\"
-${seeded%$'\n'*}
-video_threaded = \"false\"
-${seeded##*$'\n'}" ]] || fail "defaults over RetroArch's own: $(cat "${MICROEMU_RETROARCH_CONFIG}")"
-
-reset active
-mkdir -p "${confdir}"
-printf 'video_driver = "glcore"\nfps_show = "false"\nsavestate_max_keep = "5"\nquit_press_twice = "true"\n' > "${MICROEMU_RETROARCH_CONFIG}"
-run -L "${mgba}" /rom.gba
-grep -qx 'video_driver = "vulkan"' "${MICROEMU_RETROARCH_CONFIG}" || fail "glcore not moved to vulkan on a new config"
-grep -qx 'savestate_max_keep = "5"' "${MICROEMU_RETROARCH_CONFIG}" || fail "a changed savestate_max_keep was replaced"
-grep -qx 'fps_show = "true"' "${MICROEMU_RETROARCH_CONFIG}" || fail "a default fps_show was not set"
-grep -qx 'quit_press_twice = "false"' "${MICROEMU_RETROARCH_CONFIG}" || fail "a default quit_press_twice was not set"
-[[ "$(grep -c '^video_driver = ' "${MICROEMU_RETROARCH_CONFIG}")" == 1 ]] || fail "video_driver written twice"
-
-reset active
-mkdir -p "${confdir}" "${T}/dotfiles"
-echo 'fps_show = "false"' > "${T}/dotfiles/retroarch.cfg"
-ln -s "${T}/dotfiles/retroarch.cfg" "${MICROEMU_RETROARCH_CONFIG}"
-run -L "${mgba}" /rom.gba
-[[ -L "${MICROEMU_RETROARCH_CONFIG}" ]] || fail "a symlinked retroarch.cfg was replaced by a file"
-grep -qx 'fps_show = "true"' "${T}/dotfiles/retroarch.cfg" || fail "defaults not written through the symlink"
-[[ ! -e "${MICROEMU_RETROARCH_CONFIG}.new" ]] || fail "temp file left beside a symlinked config"
-rm -rf "${T}/dotfiles"
-
-reset active
-mkdir -p "${confdir}"
-: > "${confdir}/.defaults-1"
-: > "${confdir}/.defaults-4"
-: > "${confdir}/.defaults-5"
-: > "${confdir}/.defaults-6"
-echo 'fps_show = "false"' > "${MICROEMU_RETROARCH_CONFIG}"
-run -L "${mgba}" /rom.gba
-[[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == 'fps_show = "false"' ]] || fail "defaults applied again with the markers present"
+[[ "${rc}" == 0 ]] && ran || fail "a failed reconcile stopped the launch: exit ${rc}"
+grep -qx "reconcile failed" "${STATE}/log" || fail "a failed reconcile not logged"
 
 reset active
 mkdir -p "${confdir}/config/Gambatte"
@@ -179,52 +134,18 @@ for core in mGBA Gambatte Nestopia "Beetle VB" "Game & Watch"; do
 done
 [[ "$(cat "${remaps}/bsnes-mercury/bsnes-mercury.rmp")" == $'input_player1_btn_a = "0"\ninput_player1_btn_b = "8"\ninput_player1_btn_x = "1"\ninput_player1_btn_y = "9"' ]] || fail "bsnes-mercury: no A B X Y swap remap"
 [[ "$(cd "${remaps}" && find . -type f | wc -l)" == 6 ]] || fail "remaps: $(cd "${remaps}" && find . -type f)"
-grep -rq video_threaded "${confdir}" && fail "threaded video set on a new config: $(grep -r video_threaded "${confdir}")"
-[[ ! -e "${confdir}/config/PCSX-ReARMed" ]] || fail "a PCSX-ReARMed override created on a new config"
+copy_line=$(grep -n '^copy_missing "${SHARE}/remaps"' "${wrapper}" | cut -d: -f1)
+free_line=$(grep -n '^"${GAME_FREE}"' "${wrapper}" | cut -d: -f1)
+reconcile_line=$(grep -n '^"${RECONCILE}" retroarch' "${wrapper}" | cut -d: -f1)
+(( copy_line < free_line && free_line < reconcile_line )) || fail "core files copied ${copy_line}, scope wait ${free_line}, reconcile ${reconcile_line}: wrong order"
+[[ ! -e "${share}/defaults" ]] || fail "the defaults table is shipped next to the reconcile"
 
 reset active
-mkdir -p "${confdir}/config/Nestopia" "${confdir}/config/bsnes-mercury" "${confdir}/config/PCSX-ReARMed"
-: > "${confdir}/.defaults-1"
-: > "${confdir}/.defaults-2"
-: > "${confdir}/.defaults-3"
-printf 'video_driver = "glcore"\naudio_block_frames = "0"\nfps_show = "false"\nsavestate_max_keep = "0"\nmenu_shader_pipeline = "2"\nvideo_threaded = "false"\n' > "${MICROEMU_RETROARCH_CONFIG}"
-{ cat "${share}/config/Nestopia/Nestopia.cfg"; echo 'video_threaded = "true"'; } > "${confdir}/config/Nestopia/Nestopia.cfg"
-{ cat "${share}/config/bsnes-mercury/bsnes-mercury.cfg"; echo 'video_threaded = "false"'; } > "${confdir}/config/bsnes-mercury/bsnes-mercury.cfg"
-printf 'video_threaded = "true"\nvideo_smooth = "true"\n' > "${confdir}/config/PCSX-ReARMed/PCSX-ReARMed.cfg"
-run -L "${mgba}" /rom.gba
-[[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == $'video_driver = "vulkan"\naudio_block_frames = "192"\nfps_show = "false"\nsavestate_max_keep = "10"\nmenu_shader_pipeline = "1"\nvideo_threaded = "false"\ninput_player1_analog_dpad_mode = "1"' ]] \
-    || fail "version 4 on the PM2 state: $(cat "${MICROEMU_RETROARCH_CONFIG}")"
-[[ "$(tail -n 1 "${confdir}/config/Nestopia/Nestopia.cfg")" == 'video_threaded = "false"' && "$(grep -c '^video_threaded' "${confdir}/config/Nestopia/Nestopia.cfg")" == 1 ]] \
-    || fail "version 4: Nestopia threaded video: $(cat "${confdir}/config/Nestopia/Nestopia.cfg")"
-[[ "$(tail -n 1 "${confdir}/config/bsnes-mercury/bsnes-mercury.cfg")" == 'video_threaded = "false"' ]] || fail "version 4: a hand set bsnes-mercury value changed"
-[[ "$(cat "${confdir}/config/PCSX-ReARMed/PCSX-ReARMed.cfg")" == $'video_threaded = "false"\nvideo_smooth = "true"' ]] || fail "version 4: PCSX override: $(cat "${confdir}/config/PCSX-ReARMed/PCSX-ReARMed.cfg")"
-[[ -e "${confdir}/.defaults-4" ]] || fail "version 4 marker not written"
-
-reset active
-mkdir -p "${confdir}" "${MICROEMU_RETROARCH_DATA}/remaps/mGBA"
-: > "${confdir}/.defaults-1"
-: > "${confdir}/.defaults-4"
-printf 'video_scale_integer = "true"\nfps_show = "false"\n' > "${MICROEMU_RETROARCH_CONFIG}"
+mkdir -p "${MICROEMU_RETROARCH_DATA}/remaps/mGBA"
 echo 'input_player1_btn_a = "8"' > "${MICROEMU_RETROARCH_DATA}/remaps/mGBA/mGBA.rmp"
 run -L "${mgba}" /rom.gba
-[[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == $'video_scale_integer = "false"\nfps_show = "false"\ninput_player1_analog_dpad_mode = "1"' ]] || fail "versions 5 and 6: $(cat "${MICROEMU_RETROARCH_CONFIG}")"
 [[ "$(cat "${MICROEMU_RETROARCH_DATA}/remaps/mGBA/mGBA.rmp")" == 'input_player1_btn_a = "8"' ]] || fail "a user mGBA remap was replaced"
 [[ -f "${MICROEMU_RETROARCH_DATA}/remaps/Gambatte/Gambatte.rmp" ]] || fail "a missing remap beside a user one was not copied"
-
-reset active
-mkdir -p "${confdir}"
-for v in 1 4 5; do : > "${confdir}/.defaults-${v}"; done
-echo 'input_player1_analog_dpad_mode = "3"' > "${MICROEMU_RETROARCH_CONFIG}"
-run -L "${mgba}" /rom.gba
-[[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == 'input_player1_analog_dpad_mode = "3"' ]] || fail "version 6 replaced a hand set analog_dpad_mode"
-
-reset active
-mkdir -p "${confdir}"
-: > "${confdir}/.defaults-1"
-printf 'video_driver = "gl"\nsavestate_max_keep = "3"\naudio_block_frames = "512"\n' > "${MICROEMU_RETROARCH_CONFIG}"
-run -L "${mgba}" /rom.gba
-[[ "$(cat "${MICROEMU_RETROARCH_CONFIG}")" == $'video_driver = "gl"\nsavestate_max_keep = "3"\naudio_block_frames = "512"\ninput_player1_analog_dpad_mode = "1"' ]] || fail "version 4 replaced values set by hand: $(cat "${MICROEMU_RETROARCH_CONFIG}")"
-[[ ! -e "${confdir}/config/Nestopia/Nestopia.cfg" || "$(grep -c video_threaded "${confdir}/config/Nestopia/Nestopia.cfg")" == 0 ]] || fail "version 4 added threaded video to an override"
 find "${share}/config" -type f ! -name '*.opt' ! -name '*.cfg' | grep -q . && fail "a shipped core file is neither .opt nor .cfg"
 for core in Gambatte mGBA Nestopia "Stella 2014" ProSystem Handy "Beetle NeoPop" "Beetle PCE Fast" "Beetle VB" "Beetle WonderSwan" "Game & Watch"; do
     grep -qx 'run_ahead_enabled = "true"' "${share}/config/${core}/${core}.cfg" && grep -qx 'rewind_enable = "true"' "${share}/config/${core}/${core}.cfg" \
@@ -258,9 +179,10 @@ run -L "${mgba}" /rom.gba
 [[ "${rc}" == 1 ]] || fail "scope still stopping: exit ${rc}"
 ran && fail "scope still stopping: systemd-run called"
 grep -qx "microemu-game.scope is still stopping" "${STATE}/log" || fail "scope still stopping: no log line"
-for core in Gambatte mGBA Nestopia bsnes-mercury; do
+for core in Nestopia bsnes-mercury; do
     [[ -f "${share}/shaders/presets/${core}/${core}.slangp" ]] || fail "${core}: no shader preset"
 done
+[[ "$(cd "${share}/shaders/presets" && find . -type f | wc -l)" == 2 ]] || fail "presets: $(cd "${share}/shaders/presets" && find . -type f)"
 
 reset active 3
 run -L "${mgba}" /rom.gba
@@ -283,7 +205,8 @@ done
 for case in "-L${mgba} /rom.gba" "--libretro=${mgba} /rom.gba" "-L ${mgba} -c /tmp/x.cfg /rom.gba" \
     "-L ${mgba} --config=/tmp/x.cfg /rom.gba" "-L ${mgba} --appendconfig /tmp/x.cfg /rom.gba" "-L ${mgba} -L ${mgba} /rom.gba" \
     "/rom.gba" "-L" "-L ${mgba} -vL /tmp/x_libretro.so /rom.gba" "-L ${mgba} -fc /tmp/x.cfg /rom.gba" "-vc /tmp/x.cfg -L ${mgba} /rom.gba" \
-    "-L ${mgba} -Lc /rom.gba"; do
+    "-L ${mgba} -Lc /rom.gba" "-L ${mgba} --conf=/tmp/x.cfg /rom.gba" "-L ${mgba} --appendc=/tmp/x.cfg /rom.gba" \
+    "--libr ${mgba} /rom.gba" "-L ${mgba} /rom.gba --verbose" "-L ${mgba} -v /rom.gba" "-L ${mgba} rom.gba" "-L ${mgba} --conf=/x"; do
     reset active
     read -r -a argv <<<"${case}"
     run "${argv[@]}"
@@ -291,12 +214,50 @@ for case in "-L${mgba} /rom.gba" "--libretro=${mgba} /rom.gba" "-L ${mgba} -c /t
     ran && fail "args '${case}': systemd-run called"
 done
 
+grep -qxF 'input_driver = "udev"' "${cfg}" || fail "microemu.cfg: input_driver is not udev"
+grep -qxF 'input_menu_toggle = "nul"' "${cfg}" || fail "microemu.cfg: the menu still has a keyboard key (RC)"
+grep -qxF 'input_menu_toggle_gamepad_combo = "2"' "${cfg}" || fail "microemu.cfg: the menu is not on L3 + R3"
+grep -qi 'f15' "${cfg}" && fail "microemu.cfg names F15"
+grep -qxF 'libretro_info_path = "/usr/share/libretro/info"' "${cfg}" || fail "microemu.cfg: info path is not Fedora's"
+grep -qxF 'joypad_autoconfig_dir = "/usr/share/libretro/autoconfig"' "${cfg}" || fail "microemu.cfg: autoconfig dir is not Fedora's"
 reset active
-run -L "${mgba}" -v --verbose -f /rom.gba
-[[ "${rc}" == 0 ]] || fail "plain options refused: $(cat "${STATE}/stderr")"
-[[ "$(tail -n 4 "${STATE}/argv")" == $'-v\n--verbose\n-f\n/rom.gba' ]] || fail "plain options not passed: $(cat "${STATE}/argv")"
+run -L "${mgba}" /rom.gba
+grep -q '^--appendconfig' "${STATE}/argv" && [[ "$(grep -c -- '--appendconfig' "${STATE}/argv")" == 1 ]] || fail "not exactly one --appendconfig"
 
-grep -qxF 'input_driver = "udev"' "${repo}/sysext/usr/share/microemu/retroarch/microemu.cfg" || fail "microemu.cfg: input_driver is not udev"
+for case in "/var/lib/microos/openh264:/appimage/usr/lib|/appimage/usr/lib" "/a:/var/lib/microos/openh264:/b|/a:/b" \
+    "/var/lib/microos/openh264|unset" "/var/lib/microos/openhx|/var/lib/microos/openhx"; do
+    reset active
+    rc=0
+    LD_LIBRARY_PATH="${case%|*}" "${wrapper}" -L "${mgba}" /rom.gba 2> "${STATE}/stderr" || rc=$?
+    [[ "$(cat "${STATE}/ld")" == "${case#*|}" ]] || fail "openh264 strip of ${case%|*}: $(cat "${STATE}/ld"), expected ${case#*|}"
+done
+
+reset active
+"${wrapper}" -L "${mgba}" /rom.gba 2> "${STATE}/stderr" &
+wpid=$!
+wait "${wpid}" || true
+[[ "$(cat "${STATE}/marker-at-run")" == "${wpid}" ]] || fail "launch marker during systemd-run: $(cat "${STATE}/marker-at-run"), expected ${wpid}"
+[[ ! -e "${MICROEMU_RUNTIME_DIR}/launching" ]] || fail "launch marker left after the game"
+
+reset active
+echo 2 > "${STATE}/game_free_sleep"
+"${wrapper}" -L "${mgba}" /rom.gba 2> "${STATE}/stderr" &
+wpid=$!
+for _ in $(seq 1 100); do grep -qx game-free "${STATE}/calls" && break; sleep 0.02; done
+[[ "$(cat "${MICROEMU_RUNTIME_DIR}/launching" 2>/dev/null)" == "${wpid}" ]] || fail "no launch marker during the scope wait"
+kill -TERM "${wpid}"
+rc=0
+wait "${wpid}" || rc=$?
+[[ "${rc}" == 143 ]] || fail "TERM in the launch window: exit ${rc}"
+[[ ! -e "${MICROEMU_RUNTIME_DIR}/launching" ]] || fail "TERM in the launch window: marker left"
+rm -f "${STATE}/game_free_sleep"
+sleep 2.2
+ran && fail "TERM in the launch window: the game started"
+
+reset active
+echo 1 > "${STATE}/game_free_rc"
+run -L "${mgba}" /rom.gba
+[[ ! -e "${MICROEMU_RUNTIME_DIR}/launching" ]] || fail "refused launch: marker left"
 
 if (( failures )); then
     echo "retroarch-test: ${failures} failure(s)" >&2

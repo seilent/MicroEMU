@@ -26,6 +26,7 @@ work=$(mktemp -d "${dist}/.theme.XXXXXX")
 trap 'rm -rf "${work}"' EXIT
 
 tar -xzf "${file}" -C "${work}" --no-same-owner || fail "cannot unpack ${THEME_FILE}"
+find "${work}" -type d -exec chmod 0755 {} + && find "${work}" -type f -exec chmod 0644 {} + || fail "cannot set modes in ${THEME_FILE}"
 root="${work}/${THEME_NAME}-${THEME_REV}"
 for f in capabilities.xml theme.xml README.md; do
     [[ -f "${root}/${f}" ]] || fail "${f} missing in ${THEME_FILE}"

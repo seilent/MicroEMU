@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-script="${repo}/sysext/usr/libexec/microemu/microemu-game-free"
+script="${repo}/data/usr/libexec/microemu/microemu-game-free"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT

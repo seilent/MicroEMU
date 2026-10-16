@@ -5,7 +5,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-sync="${repo}/sysext/usr/libexec/microemu/microemu-android-sync"
+sync="${repo}/android/data/usr/libexec/microemu/microemu-android-sync"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT

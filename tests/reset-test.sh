@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-reset_cmd="${repo}/sysext/usr/bin/microemu-play-reset"
+reset_cmd="${repo}/android/data/usr/bin/microemu-play-reset"
 
 T=$(mktemp -d)
 trap 'chmod -R u+w "${T}" 2>/dev/null; rm -rf "${T}"' EXIT

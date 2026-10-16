@@ -5,7 +5,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-update="${repo}/sysext/usr/bin/microemu-play-update"
+update="${repo}/android/data/usr/bin/microemu-play-update"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
@@ -20,7 +20,7 @@ export XDG_RUNTIME_DIR="${T}/run"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
 export MICROEMU_GAMESCOPE="${T}/bin/gamescope"
 export MICROEMU_HEADLESS_WAIT_S=3
-export MICROEMU_DISPLAY_FILE="${repo}/sysext/usr/share/microemu/android/display"
+export MICROEMU_DISPLAY_FILE="${repo}/android/data/usr/share/microemu/android/display"
 export MICROEMU_ANDROID_DATA="${T}/data/android"
 headless_dir="${MICROEMU_RUNTIME_DIR}/headless"
 clear_marker="${MICROEMU_RUNTIME_DIR}/play-update-clear"

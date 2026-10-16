@@ -1,0 +1,5 @@
+export GAMESCOPE_BIN=/usr/libexec/microemu/microemu-gamescope
+export CLIENTCMD=/usr/libexec/microemu/microemu-client
+if [[ "$(timeout 5 "${MICROEMU_MICROSET:-microset}" get microemu.orientation 2>/dev/null)" == landscape-flipped ]]; then
+    export ORIENTATION=left
+fi

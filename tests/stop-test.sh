@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-libexec="${repo}/sysext/usr/libexec/microemu"
+libexec="${repo}/data/usr/libexec/microemu"
 
 T=$(mktemp -d)
 pids=()
@@ -20,14 +20,11 @@ export STATE="${T}/state"
 export MICROEMU_GAME_STOP_HOOKS="${T}/hooks"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
 export MICROEMU_PROC_DIR="${T}/proc"
-export MICROEMU_ESDE_BIN=/usr/lib/microemu/es-de/usr/bin/es-de
+export MICROEMU_ESDE_BIN=/usr/bin/es-de
 
 cat > "${T}/bin/systemctl" <<'STUB'
 #!/usr/bin/bash
 echo "systemctl $*" >> "${STATE}/calls"
-if [[ "$*" == "--user stop microemu-play.service" ]]; then
-    cat "${STATE}"/term-* 2>/dev/null | grep -c . > "${STATE}/terms-before-play-stop"
-fi
 [[ "$*" != "--user reset-failed microemu-game.scope" || ! -e "${STATE}/no-scope" ]] || exit 1
 exit 0
 STUB
@@ -98,17 +95,16 @@ session_cg=/user.slice/user-1000.slice/user@1000.service/app.slice/gamescope-ses
 other_cg=/user.slice/user-1000.slice/user@1000.service/app.slice/gamescope-session-plus@steam.service
 
 reset
-hook 20-android
+hook 20-second
 hook 10-first
 proc esde 1 "${MICROEMU_ESDE_BIN}" "${session_cg}"
 run
 [[ "${rc}" == 0 ]] || fail "order exit ${rc}: $(cat "${STATE}/stderr")"
 expected="hook 10-first
-hook 20-android
+hook 20-second
 systemctl --user reset-failed microemu-game.scope
 systemctl --user stop microemu-game.scope
-systemctl --user reset-failed microemu-game.scope
-systemctl --user stop microemu-play.service"
+systemctl --user reset-failed microemu-game.scope"
 [[ "$(cat "${STATE}/calls")" == "${expected}" ]] || fail "order: $(cat "${STATE}/calls")"
 [[ "$(terms esde)" == 1 ]] || fail "order: es-de got $(terms esde) TERM, expected 1"
 (( elapsed < 1500 )) || fail "order: took ${elapsed} ms"
@@ -146,16 +142,6 @@ run
 [[ "$(grep -c "microemu-game.scope" "${STATE}/calls")" == 3 ]] || fail "nothing running: $(cat "${STATE}/calls")"
 grep -q '^hook' "${STATE}/calls" && fail "nothing running: a hook ran"
 (( elapsed < 1000 )) || fail "nothing running: took ${elapsed} ms"
-
-reset
-run
-[[ "$(tail -n 1 "${STATE}/calls")" == "systemctl --user stop microemu-play.service" ]] || fail "no es-de: play unit not stopped: $(cat "${STATE}/calls")"
-[[ -e "${MICROEMU_RUNTIME_DIR}/play-stop-requested" ]] || fail "no stop marker before the play stop"
-
-reset
-proc esde 1 "${MICROEMU_ESDE_BIN}" "${session_cg}"
-run
-[[ "$(cat "${STATE}/terms-before-play-stop" 2>/dev/null)" == 1 ]] || fail "play stop order: the unit stopped before es-de got its TERM"
 
 reset
 proc gone 1 "${MICROEMU_ESDE_BIN}" "${session_cg}"
@@ -216,7 +202,7 @@ rm -rf "${MICROEMU_GAME_STOP_HOOKS}"
 "${libexec}/microemu-game-stop"
 [[ "$(grep -c "microemu-game.scope" "${STATE}/calls")" == 3 ]] || fail "no hook directory: scope not stopped"
 
-grep -q "microemu-play-update" "${STATE}/calls" && fail "session stop touched the update unit: $(cat "${STATE}/calls")"
+grep -q "microemu-play" "${STATE}/calls" && fail "session stop touched an Android unit: $(cat "${STATE}/calls")"
 
 if (( failures )); then
     echo "stop-test: ${failures} failure(s)" >&2

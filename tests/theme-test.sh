@@ -25,6 +25,8 @@ tarball() {
         capabilities) rm "${T}/src-tree/${top}/capabilities.xml" ;;
         license) sed -i '/License/,$d' "${T}/src-tree/${top}/README.md" ;;
     esac
+    chmod 0775 "${T}/src-tree/${top}/_inc"
+    chmod 0775 "${T}/src-tree/${top}/_inc/font.ttf"
     tar -czf "${out}" -C "${T}/src-tree" "${top}"
 }
 
@@ -53,6 +55,7 @@ leftover() {
 run
 [[ "${rc}" == 0 ]] || fail "fresh exit ${rc}: ${err}"
 [[ -f "${tree}/capabilities.xml" && -f "${tree}/theme.xml" && -f "${tree}/_inc/font.ttf" ]] || fail "fresh: tree incomplete"
+[[ "$(stat -c %a "${tree}/_inc" "${tree}/_inc/font.ttf" "${tree}")" == $'755\n644\n755' ]] || fail "fresh: modes $(stat -c '%a %n' "${tree}/_inc" "${tree}/_inc/font.ttf" "${tree}")"
 [[ "$(head -n 1 "${license}")" == "Art Book Next (ES-DE Edition), https://github.com/anthonycaccese/art-book-next-es-de at ${rev}" ]] \
     || fail "fresh: license header $(head -n 1 "${license}")"
 grep -qx '## \*\*Credits\*\*' "${license}" || fail "fresh: credits missing from the license file"

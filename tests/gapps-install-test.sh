@@ -7,7 +7,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-install_cmd="${repo}/sysext/usr/bin/microemu-gapps-install"
+install_cmd="${repo}/android/data/usr/bin/microemu-gapps-install"
 
 T=$(mktemp -d)
 trap 'chmod -R u+w "${T}" 2>/dev/null; rm -rf "${T}"' EXIT

@@ -1,0 +1,9 @@
+[Unit]
+Description=MicroEMU pad target
+BindsTo=gamescope-session-plus@microemu.service
+After=gamescope-session-plus@microemu.service steamos-manager.service
+
+[Service]
+ExecStart=/usr/libexec/microemu/microemu-pad xb360
+Restart=on-failure
+RestartSec=2

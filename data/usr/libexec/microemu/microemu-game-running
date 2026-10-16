@@ -1,0 +1,18 @@
+#!/usr/bin/bash
+set -u
+
+MARKER="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/launching"
+
+state=$(systemctl --user show -P ActiveState microemu-game.scope 2>/dev/null)
+case "${state}" in
+    active|activating|deactivating|reloading)
+        echo "scope ${state}"
+        exit 0
+        ;;
+esac
+pid=$(cat "${MARKER}" 2>/dev/null)
+if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+    echo "launch ${pid}"
+    exit 0
+fi
+exit 1

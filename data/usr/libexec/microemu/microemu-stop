@@ -1,0 +1,34 @@
+#!/usr/bin/bash
+set -u
+
+PROC_DIR="${MICROEMU_PROC_DIR:-/proc}"
+ESDE_BIN="${MICROEMU_ESDE_BIN:-/usr/bin/es-de}"
+TERM_TRIES="${MICROEMU_STOP_TERM_TRIES:-6}"
+GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+
+if [[ "${1:-}" != --body ]]; then
+    exec timeout -k 2 "${MICROEMU_STOP_BOUND_S:-15}" "$0" --body
+fi
+
+esde_pid() {
+    local dir pid
+    for dir in "${PROC_DIR}"/[0-9]*; do
+        pid=${dir##*/}
+        [[ "$(readlink "${dir}/exe" 2>/dev/null)" == "${ESDE_BIN}" ]] || continue
+        grep -qE '/gamescope-session-plus@microemu\.service(/|$)' "${dir}/cgroup" 2>/dev/null || continue
+        printf '%s\n' "${pid}"
+        return 0
+    done
+    return 1
+}
+
+"${GAME_STOP}"
+
+if pid=$(esde_pid); then
+    for ((i = 0; i < TERM_TRIES; i++)); do
+        kill -TERM "${pid}" 2>/dev/null || break
+        sleep 0.5
+        kill -0 "${pid}" 2>/dev/null || break
+    done
+fi
+exit 0

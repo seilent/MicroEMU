@@ -1,0 +1,7 @@
+[Unit]
+Description=MicroEMU LC hold
+After=gamescope-session-plus@microemu.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microemu/microemu-lc

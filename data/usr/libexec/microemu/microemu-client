@@ -1,0 +1,143 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+ESDE="${MICROEMU_ESDE:-/usr/bin/es-de}"
+SYSTEMS="${MICROEMU_SYSTEMS_FILE:-/usr/share/microemu/es-de/es_systems.xml}"
+THEMES="${MICROEMU_THEMES_DIR:-/usr/share/microemu/es-de/themes}"
+APPDATA="${MICROEMU_ESDE_APPDATA_DIR:-${HOME}/.local/share/microemu/ES-DE}"
+RUNTIME="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}"
+SESSION=gamescope-session-plus@microemu.service
+GAME_STOP="${MICROEMU_GAME_STOP:-/usr/libexec/microemu/microemu-game-stop}"
+RECONCILE="${MICROEMU_RECONCILE:-/usr/libexec/microemu/microemu-reconcile}"
+OSD="${MICROEMU_OSD:-/usr/libexec/microemu/microemu-osd}"
+GAME_RUNNING="${MICROEMU_GAME_RUNNING:-/usr/libexec/microemu/microemu-game-running}"
+SESSIONS_DIR="${RUNTIME}/microos"
+OPENH264="${MICROEMU_OPENH264_DIR:-/var/lib/microos/openh264}"
+
+log() { logger -t microemu-client -- "$*" 2>/dev/null || true; }
+
+xml_escape() {
+    local s=$1
+    s=${s//&/"&amp;"}
+    s=${s//</"&lt;"}
+    s=${s//>/"&gt;"}
+    s=${s//\"/"&quot;"}
+    printf '%s' "${s}"
+}
+
+setup_systems() {
+    local dir="${APPDATA}/custom_systems" tmp text path
+    mkdir -p "${dir}"
+    rm -rf "${dir}/es_find_rules.xml"
+    [[ ! -d "${dir}/es_systems.xml" || -L "${dir}/es_systems.xml" ]] || rm -rf "${dir}/es_systems.xml"
+    if ! text=$(<"${SYSTEMS}"); then
+        log "${SYSTEMS} unreadable"
+        return 0
+    fi
+    path=$(xml_escape "${SESSIONS_DIR}")
+    tmp=$(mktemp "${dir}/.es_systems.XXXXXX") || return 0
+    if printf '%s\n' "${text//%MICROOS_SESSIONS%/"${path}"}" > "${tmp}" && mv -fT "${tmp}" "${dir}/es_systems.xml"; then
+        return 0
+    fi
+    rm -f "${tmp}"
+    log "cannot write ${dir}/es_systems.xml"
+}
+
+setup_themes() {
+    local theme target
+    mkdir -p "${APPDATA}/themes"
+    for theme in "${THEMES}"/*; do
+        [[ -d "${theme}" ]] || continue
+        target="${APPDATA}/themes/${theme##*/}"
+        if [[ -d "${target}" && ! -L "${target}" ]]; then
+            log "${target} is a directory, kept instead of the shipped ${theme##*/}"
+            continue
+        fi
+        rm -f "${target}"
+        ln -s "${theme}" "${target}"
+    done
+}
+
+boot_into() {
+    local name label default gamelist="${APPDATA}/gamelists/microos" list
+    rm -rf "${SESSIONS_DIR}"
+    mkdir -p "${SESSIONS_DIR}" "${gamelist}"
+    if ! list=$(timeout 5 microos-session list 2>/dev/null); then
+        log "microos-session list failed, no BOOT INTO entries"
+        list=
+    fi
+    {
+        printf '<?xml version="1.0"?>\n<gameList>\n'
+        while IFS=$'\t' read -r name label default; do
+            [[ "${default}" == yes && "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || continue
+            : > "${SESSIONS_DIR}/${name}.session"
+            printf '    <game>\n        <path>./%s.session</path>\n        <name>%s</name>\n    </game>\n' \
+                "${name}" "$(xml_escape "${label}")"
+        done <<< "${list}"
+        printf '</gameList>\n'
+    } > "${gamelist}/gamelist.xml"
+}
+
+start_osd() {
+    osd_pid=
+    if [[ ! -x "${OSD}" ]]; then
+        log "${OSD} missing"
+        return 0
+    fi
+    GDK_BACKEND=x11 "${OSD}" </dev/null &
+    osd_pid=$!
+}
+
+run_esde() {
+    local rc=0
+    if [[ -e "${OPENH264}/libopenh264.so.8" ]]; then
+        LD_LIBRARY_PATH="${OPENH264}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${ESDE}" &
+    else
+        "${ESDE}" &
+    fi
+    esde_pid=$!
+    wait "${esde_pid}" || rc=$?
+    log "es-de exited with ${rc}"
+}
+
+"${GAME_STOP}"
+setup_systems
+setup_themes
+mkdir -p "${APPDATA}/settings"
+"${RECONCILE}" esde "${APPDATA}/settings" || log "reconcile failed"
+boot_into
+export ESDE_APPDATA_DIR="${APPDATA}"
+start_osd
+
+if [[ -x "${ESDE}" ]]; then
+    run_esde
+else
+    log "${ESDE} missing"
+fi
+if [[ -n "${osd_pid}" ]] && ! kill -0 "${osd_pid}" 2>/dev/null; then
+    rc=0
+    wait "${osd_pid}" || rc=$?
+    log "microemu-osd exited with ${rc}"
+fi
+
+stopping() { [[ "$(systemctl --user show -p ActiveState --value "${SESSION}" 2>/dev/null)" == deactivating ]]; }
+
+if game=$("${GAME_RUNNING}"); then
+    log "es-de gone with a game (${game}), waiting for the game to end"
+    while ! stopping && "${GAME_RUNNING}" >/dev/null; do
+        sleep 1
+    done
+fi
+if stopping; then
+    exec sleep infinity
+fi
+
+if ! microos-session back; then
+    log "microos-session back failed, retrying in 2 s"
+    sleep 2
+    if ! microos-session back; then
+        log "microos-session back failed twice, ending the session"
+        exit 1
+    fi
+fi
+exec sleep infinity
