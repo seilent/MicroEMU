@@ -10,7 +10,8 @@
       ],
       "applier": null,
       "group": "emulation",
-      "label": "MicroEMU orientation"
+      "label": "MicroEMU orientation",
+      "ui": {"order": 0, "values": {"landscape-flipped": "landscape flipped"}}
     },
     "microemu.esde.theme": {
       "type": "s",
@@ -25,7 +26,8 @@
       "group": "emulation",
       "label": "ES-DE theme",
       "file": "es_settings.xml",
-      "setting": "Theme"
+      "setting": "Theme",
+      "ui": {"order": 1, "values": {"art-book-next-es-de": "art book next", "linear-es-de": "linear", "modern-es-de": "modern", "slate-es-de": "slate"}}
     },
     "microemu.esde.theme_color_scheme": {
       "type": "s",
@@ -73,7 +75,8 @@
       "group": "emulation",
       "label": "Theme color scheme",
       "file": "es_settings.xml",
-      "setting": "ThemeColorScheme"
+      "setting": "ThemeColorScheme",
+      "ui": {"order": 2}
     },
     "microemu.esde.theme_variant": {
       "type": "s",
@@ -115,7 +118,8 @@
       "group": "emulation",
       "label": "Theme variant",
       "file": "es_settings.xml",
-      "setting": "ThemeVariant"
+      "setting": "ThemeVariant",
+      "ui": {"order": 3}
     },
     "microemu.esde.theme_font_size": {
       "type": "s",
@@ -130,7 +134,8 @@
       "group": "emulation",
       "label": "Theme font size",
       "file": "es_settings.xml",
-      "setting": "ThemeFontSize"
+      "setting": "ThemeFontSize",
+      "ui": {"order": 4}
     },
     "microemu.esde.theme_aspect_ratio": {
       "type": "s",
@@ -155,7 +160,8 @@
       "group": "emulation",
       "label": "Theme aspect ratio",
       "file": "es_settings.xml",
-      "setting": "ThemeAspectRatio"
+      "setting": "ThemeAspectRatio",
+      "ui": {"order": 5}
     },
     "microemu.retroarch.video_driver": {
       "type": "s",
@@ -174,7 +180,8 @@
       "group": "emulation",
       "label": "Video driver",
       "file": "retroarch.cfg",
-      "setting": "video_driver"
+      "setting": "video_driver",
+      "ui": {"order": 6}
     },
     "microemu.retroarch.video_scale_integer": {
       "type": "b",
@@ -183,7 +190,8 @@
       "group": "emulation",
       "label": "Integer scale",
       "file": "retroarch.cfg",
-      "setting": "video_scale_integer"
+      "setting": "video_scale_integer",
+      "ui": {"order": 7}
     },
     "microemu.retroarch.audio_block_frames": {
       "type": "u",
@@ -194,7 +202,8 @@
       "group": "emulation",
       "label": "Audio block frames",
       "file": "retroarch.cfg",
-      "setting": "audio_block_frames"
+      "setting": "audio_block_frames",
+      "ui": {"order": 8}
     },
     "microemu.retroarch.fps_show": {
       "type": "b",
@@ -203,7 +212,8 @@
       "group": "emulation",
       "label": "Show FPS",
       "file": "retroarch.cfg",
-      "setting": "fps_show"
+      "setting": "fps_show",
+      "ui": {"order": 9}
     },
     "microemu.retroarch.sort_savefiles_enable": {
       "type": "b",
@@ -212,7 +222,8 @@
       "group": "emulation",
       "label": "Saves per core",
       "file": "retroarch.cfg",
-      "setting": "sort_savefiles_enable"
+      "setting": "sort_savefiles_enable",
+      "ui": {"order": 10}
     },
     "microemu.retroarch.sort_savestates_enable": {
       "type": "b",
@@ -221,7 +232,8 @@
       "group": "emulation",
       "label": "States per core",
       "file": "retroarch.cfg",
-      "setting": "sort_savestates_enable"
+      "setting": "sort_savestates_enable",
+      "ui": {"order": 11}
     },
     "microemu.retroarch.savestate_auto_index": {
       "type": "b",
@@ -230,7 +242,8 @@
       "group": "emulation",
       "label": "State auto index",
       "file": "retroarch.cfg",
-      "setting": "savestate_auto_index"
+      "setting": "savestate_auto_index",
+      "ui": {"order": 12}
     },
     "microemu.retroarch.savestate_auto_load": {
       "type": "b",
@@ -239,7 +252,8 @@
       "group": "emulation",
       "label": "Load state at start",
       "file": "retroarch.cfg",
-      "setting": "savestate_auto_load"
+      "setting": "savestate_auto_load",
+      "ui": {"order": 13}
     },
     "microemu.retroarch.savestate_auto_save": {
       "type": "b",
@@ -248,7 +262,8 @@
       "group": "emulation",
       "label": "Save state at exit",
       "file": "retroarch.cfg",
-      "setting": "savestate_auto_save"
+      "setting": "savestate_auto_save",
+      "ui": {"order": 14}
     },
     "microemu.retroarch.savestate_max_keep": {
       "type": "u",
@@ -259,7 +274,8 @@
       "group": "emulation",
       "label": "States kept",
       "file": "retroarch.cfg",
-      "setting": "savestate_max_keep"
+      "setting": "savestate_max_keep",
+      "ui": {"order": 15}
     },
     "microemu.retroarch.quit_on_close_content": {
       "type": "u",
@@ -270,7 +286,8 @@
       "group": "emulation",
       "label": "Quit on close content",
       "file": "retroarch.cfg",
-      "setting": "quit_on_close_content"
+      "setting": "quit_on_close_content",
+      "ui": {"order": 16}
     },
     "microemu.retroarch.quit_press_twice": {
       "type": "b",
@@ -279,7 +296,8 @@
       "group": "emulation",
       "label": "Press quit twice",
       "file": "retroarch.cfg",
-      "setting": "quit_press_twice"
+      "setting": "quit_press_twice",
+      "ui": {"order": 17}
     },
     "microemu.retroarch.menu_shader_pipeline": {
       "type": "u",
@@ -290,7 +308,8 @@
       "group": "emulation",
       "label": "Menu background",
       "file": "retroarch.cfg",
-      "setting": "menu_shader_pipeline"
+      "setting": "menu_shader_pipeline",
+      "ui": {"order": 18}
     },
     "microemu.retroarch.video_shader_enable": {
       "type": "b",
@@ -299,7 +318,8 @@
       "group": "emulation",
       "label": "Shaders",
       "file": "retroarch.cfg",
-      "setting": "video_shader_enable"
+      "setting": "video_shader_enable",
+      "ui": {"order": 19}
     },
     "microemu.retroarch.input_player1_analog_dpad_mode": {
       "type": "u",
@@ -310,7 +330,8 @@
       "group": "emulation",
       "label": "Stick as d-pad",
       "file": "retroarch.cfg",
-      "setting": "input_player1_analog_dpad_mode"
+      "setting": "input_player1_analog_dpad_mode",
+      "ui": {"order": 20}
     },
     "microemu.core.bsnes_mercury.video_threaded": {
       "type": "b",
@@ -319,7 +340,8 @@
       "group": "emulation",
       "label": "bsnes-mercury threaded video",
       "file": "config/bsnes-mercury/bsnes-mercury.cfg",
-      "setting": "video_threaded"
+      "setting": "video_threaded",
+      "ui": {"order": 21}
     },
     "microemu.core.nestopia.video_threaded": {
       "type": "b",
@@ -328,7 +350,8 @@
       "group": "emulation",
       "label": "Nestopia threaded video",
       "file": "config/Nestopia/Nestopia.cfg",
-      "setting": "video_threaded"
+      "setting": "video_threaded",
+      "ui": {"order": 22}
     },
     "microemu.core.pcsx_rearmed.video_threaded": {
       "type": "b",
@@ -337,7 +360,11 @@
       "group": "emulation",
       "label": "PCSX ReARMed threaded video",
       "file": "config/PCSX-ReARMed/PCSX-ReARMed.cfg",
-      "setting": "video_threaded"
+      "setting": "video_threaded",
+      "ui": {"order": 23}
     }
+  },
+  "groups": {
+    "emulation": {"label": "emulation", "order": 0}
   }
 }

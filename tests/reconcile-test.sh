@@ -371,6 +371,9 @@ for k, v in d["keys"].items():
         assert v.get("enum") and all(re.fullmatch(r"[A-Za-z0-9_.:-]+", e) for e in v["enum"]), k
     assert v.get("group") == "emulation" and v.get("label"), k
     assert ("file" in v) == ("setting" in v), k
+    assert isinstance(v["ui"]["order"], int), k
+assert d["groups"] == {"emulation": {"label": "emulation", "order": 0}}, d["groups"]
+assert sorted(v["ui"]["order"] for v in d["keys"].values()) == list(range(len(d["keys"])))
 o = d["keys"]["microemu.orientation"]
 assert o["enum"] == ["landscape", "landscape-flipped"] and o["default"] == "landscape"
 files = {v["file"] for v in d["keys"].values() if "file" in v}
