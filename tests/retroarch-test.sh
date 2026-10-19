@@ -109,6 +109,7 @@ expected="--user
 --collect
 --expand-environment=no
 --unit=microemu-game
+--slice=game.slice
 --property=BindsTo=gamescope-session-plus@microemu.service
 --property=After=gamescope-session-plus@microemu.service
 --property=TimeoutStopSec=5

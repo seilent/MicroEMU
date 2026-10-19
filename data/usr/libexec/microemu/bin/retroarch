@@ -151,7 +151,7 @@ fi
 if [[ "${pick[layout]}" == rocknix && ! -e "${PINNED}" ]]; then
     pin || refuse "cannot write ${PINNED}"
 fi
-systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
+systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game --slice=game.slice \
     --property=BindsTo="${SESSION}" --property=After="${SESSION}" --property=TimeoutStopSec=5 \
     -- "${BIN}" -c "${CONFIG}" --appendconfig "${APPEND}|${PATHS_CFG}" -L "${core}" "${rom}" &
 rc=0

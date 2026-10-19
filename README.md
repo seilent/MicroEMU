@@ -189,13 +189,14 @@ It copies the core files and remaps (below) when missing, runs `microemu-game-fr
 `microemu-game.scope` is still stopping), the reconcile, and runs, waiting for it,
 
 ```
-systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game \
+systemd-run --user --scope --collect --expand-environment=no --unit=microemu-game --slice=game.slice \
     --property=BindsTo=gamescope-session-plus@microemu.service --property=After=gamescope-session-plus@microemu.service \
     --property=TimeoutStopSec=5 -- /usr/bin/retroarch -c ~/.config/microemu/retroarch/retroarch.cfg \
     --appendconfig "/usr/share/microemu/retroarch/microemu.cfg|$XDG_RUNTIME_DIR/microemu/retroarch-paths.cfg" -L <core> <rom>
 ```
 
-After the game it runs `microemu-game-free` and the reconcile again. ES-DE waits for it; its exit code is the game's.
+The scope runs in the user `game.slice`, where MicroOS sets the game CPU floor. After the game it runs `microemu-game-free`
+and the reconcile again. ES-DE waits for it; its exit code is the game's.
 
 RetroArch saves its whole config on exit, SIGTERM included, so the ROCKNIX `false` of the two sort keys lands in
 `retroarch.cfg`. Before a ROCKNIX launch the wrapper records their values in `~/.local/state/microemu/pinned-keys`
