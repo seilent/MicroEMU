@@ -119,7 +119,42 @@
       "label": "Theme variant",
       "file": "es_settings.xml",
       "setting": "ThemeVariant",
-      "ui": {"order": 3}
+      "ui": {
+        "order": 3,
+        "values": {
+          "gamelist-list-metadata-cover": "Info: boxart",
+          "gamelist-list-metadata-screenshot-marquee": "Info: shot, marquee",
+          "gamelist-list-metadata-screenshot-cover": "Info: shot, boxart",
+          "gamelist-list-metadata-miximage": "Info: miximage",
+          "gamelist-list-cover": "List: boxart",
+          "gamelist-list-screenshot-marquee": "List: shot, marquee",
+          "gamelist-list-basic": "List",
+          "gamelist-grid-cover": "Grid: boxart",
+          "gamelist-grid-cover-steamgriddb": "Grid: SteamGridDB",
+          "gamelist-grid-screenshot": "Grid: shot",
+          "gamelist-list-metadata-cover-nh": "Info: boxart, no help",
+          "gamelist-list-metadata-screenshot-marquee-nh": "Info: shot, marquee, no help",
+          "gamelist-list-metadata-screenshot-cover-nh": "Info: shot, boxart, no help",
+          "gamelist-list-metadata-miximage-nh": "Info: miximage, no help",
+          "gamelist-list-cover-nh": "List: boxart, no help",
+          "gamelist-list-screenshot-marquee-nh": "List: shot, marquee, no help",
+          "gamelist-list-basic-nh": "List, no help",
+          "gamelist-grid-cover-nh": "Grid: boxart, no help",
+          "gamelist-grid-cover-steamgriddb-nh": "Grid: SteamGridDB, no help",
+          "gamelist-grid-screenshot-nh": "Grid: shot, no help",
+          "textlistWithVideos": "Linear: textlist",
+          "textlistWithoutVideos": "Linear: no videos",
+          "simpleTextlistWithVideos": "Linear: simple",
+          "simpleTextlistWithoutVideos": "Linear: simple, no videos",
+          "carousel": "Linear: carousel",
+          "simpleCarousel": "Linear: simple carousel",
+          "withVideos": "Textlist, videos",
+          "withoutVideos": "Textlist, no videos",
+          "withVideosLegacy": "Legacy, videos",
+          "withoutVideosLegacy": "Legacy, no videos",
+          "noGameMedia": "No game media"
+        }
+      }
     },
     "microemu.esde.theme_font_size": {
       "type": "s",
