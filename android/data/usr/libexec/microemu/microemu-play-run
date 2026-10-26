@@ -241,6 +241,7 @@ if [[ "${NAME}" != headless-* ]]; then
     done < <("${PAD_NODES}")
 fi
 mounts+=("\"type=bind,source=${RUN}/odm-build.prop,destination=/vendor/odm/etc/build.prop,ro\"")
+mounts+=("\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"")
 
 gapps_set=
 old_stamp=$(cat "${CONTEXT}/microemu-stamp" 2>/dev/null)

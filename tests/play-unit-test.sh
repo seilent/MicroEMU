@@ -152,7 +152,7 @@ grep -q '^LD_LIBRARY_PATH=' "${STATE}/env" && fail "LD_LIBRARY_PATH reached lept
 grep -qx "lepton start microemu-play" "${STATE}/events" || fail "lepton not run as start microemu-play"
 [[ "$(sed -n '1p' "${conf}")" == "[containers]" ]] || fail "conf header"
 grep -qx 'annotations = \["run.oci.systemd.subgroup=app-steam-app1-1.scope"\]' "${conf}" || fail "annotation missing: $(cat "${conf}")"
-expected_mounts="mounts = [\"type=bind,source=/dev/input/event10,destination=/dev/input/event10,rw\",\"type=bind,source=/dev/input/event12,destination=/dev/input/event12,rw\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\"]"
+expected_mounts="mounts = [\"type=bind,source=/dev/input/event10,destination=/dev/input/event10,rw\",\"type=bind,source=/dev/input/event12,destination=/dev/input/event12,rw\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\",\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"]"
 grep -qxF "${expected_mounts}" "${conf}" || fail "mounts: $(cat "${conf}")"
 [[ "$(cat "${odm}")" == $'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\nro.sf.lcd_density=213\nqemu.hw.mainkeys=1\ndebug.mesa.tu.debug=noubwc\npm.dexopt.install=speed\nro.adb.secure=1' ]] || fail "odm prop: $(cat "${odm}")"
 expected_events="notify EXTEND_TIMEOUT_USEC=120000000
@@ -375,7 +375,7 @@ grep -q "notify --ready" "${STATE}/events" && fail "ready sent before sys.boot_c
 reset "exit 0"
 : > "${STATE}/nodes"
 run
-grep -qxF "mounts = [\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\"]" "${conf}" || fail "no pad: mounts $(cat "${conf}")"
+grep -qxF "mounts = [\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\",\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"]" "${conf}" || fail "no pad: mounts $(cat "${conf}")"
 
 reset "sleep 0.5;exit 1"
 printf 'I x: ok\nE SystemServer: Signature|privileged permissions not in privapp-permissions whitelist: {x}\n' > "${STATE}/logcat"

@@ -332,7 +332,7 @@ runs `microemu-play-run`, which writes `$XDG_RUNTIME_DIR/microemu/lepton/contain
 | Setting | Value |
 |---|---|
 | annotation | `run.oci.systemd.subgroup=app-steam-app1-1.scope`: gamescope takes the Android window's appid from the container's cgroup name, so it can take focus over ES-DE |
-| mounts | each `xb360` node at the same path, `rw`; `$XDG_RUNTIME_DIR/microemu/lepton/odm-build.prop` over `/vendor/odm/etc/build.prop`, `ro` |
+| mounts | each `xb360` node at the same path, `rw`; `$XDG_RUNTIME_DIR/microemu/lepton/odm-build.prop` over `/vendor/odm/etc/build.prop`, `ro`; `/dev/net/tun` at `/dev/tun`, `rw`, the node Android's `VpnService` opens (Lepton binds only `/dev/net/tun`) |
 | odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density` from `/usr/share/microemu/android/display` (`density=213`: a portrait app's 426 px column is 320 dp), `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off), `pm.dexopt.install=speed` (installs and updates compile with `speed`) and `ro.adb.secure=1` (adbd takes only the keys in `/data/misc/adb/adb_keys`; the Lepton view writes them from `~/.config/microemu/adb_keys`; `lepton-armada` writes none, so through it every adb client is `unauthorized` and gets no dialog) |
 | environment | `TERM=dumb`, `APP_WANTS_FLATSCREEN=true`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`, `STEAM_COMPAT_DATA_PATH` the context (shared storage kept in `external/`), `LEPTON_NO_CLEANUP=true`, `LEPTON_KEEP_CONTEXT=1`, no `SteamAppId` or `LD_LIBRARY_PATH`; `internal/` created first |
 
