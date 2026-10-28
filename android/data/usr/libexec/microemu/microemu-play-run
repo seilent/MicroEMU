@@ -223,6 +223,7 @@ mkdir -p "${RUN}" "${DATA}" "${CONTEXT}/internal"
     echo qemu.hw.mainkeys=1
     echo debug.mesa.tu.debug=noubwc
     echo pm.dexopt.install=speed
+    echo ro.adb.secure=1
     if [[ -e "${DATA}/privapp-log" ]]; then
         echo ro.control_privapp_permissions=log
     fi

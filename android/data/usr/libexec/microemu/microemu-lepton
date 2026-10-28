@@ -1,0 +1,88 @@
+#!/usr/bin/bash
+set -eu
+
+RUNTIME="${MICROEMU_LEPTON_RUNTIME:-}"
+LIBLEPTON="${MICROEMU_LIBLEPTON:-/usr/libexec/microemu/microemu-liblepton.sh}"
+REVIEWED="${MICROEMU_LEPTON_REVIEWED:-/usr/share/microemu/android/lepton-reviewed}"
+STEAM_EMPTY="${MICROEMU_STEAM_EMPTY:-/usr/share/microemu/android/steam-empty}"
+VALVE_HOME="${MICROEMU_LEPTON_HOME:-${HOME}/.local/share/microemu/android/home}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-${HOME}/.local/state}"
+RUN="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR}/microemu}/lepton"
+
+say() { printf 'microemu-lepton: %s\n' "$*" >&2; }
+
+fail() {
+    say "$*"
+    exit 1
+}
+
+[[ "${1:-}" == start && $# -eq 2 ]] || fail "usage: microemu-lepton start <context>"
+name=$2
+case "${name}" in
+    dev|sysbake|steamlaunch-*) fail "${name} is a context name Lepton treats specially, refusing" ;;
+esac
+[[ "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "bad context name ${name}"
+[[ "${RUNTIME}" == /* && -x "${RUNTIME}/lepton" && -f "${RUNTIME}/liblepton/liblepton.sh" ]] \
+    || fail "no Lepton runtime in MICROEMU_LEPTON_RUNTIME (${RUNTIME:-unset})"
+[[ -f "${LIBLEPTON}" ]] || fail "${LIBLEPTON} missing"
+[[ -f "${REVIEWED}" ]] || fail "${REVIEWED} missing"
+sums=$(export LC_ALL=C && cd "${RUNTIME}" && sha256sum lepton liblepton/*.sh sysbake.xattrs) \
+    || fail "cannot hash the Lepton files in ${RUNTIME}"
+[[ "${sums}" == "$(cat "${REVIEWED}")" ]] || fail "Lepton in ${RUNTIME} is not the build in ${REVIEWED}, refusing"
+[[ "$(grep ro.build.version.sdk= "${RUNTIME}/images/rootfs/system/build.prop" 2>/dev/null | sed 's/.*=//g')" == 30 ]] \
+    || fail "Lepton in ${RUNTIME} is not Android SDK 30, refusing"
+[[ -d "${STEAM_EMPTY}" ]] && entries=$(find "${STEAM_EMPTY}" -mindepth 1 -print -quit) && [[ -z "${entries}" ]] \
+    || fail "${STEAM_EMPTY} is not an empty directory"
+
+context="${VALVE_HOME}/.local/share/lepton/contexts/${name#headless-}"
+if [[ -n "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
+    [[ "${STEAM_COMPAT_DATA_PATH}" == "${context}" ]] || fail "STEAM_COMPAT_DATA_PATH is not ${context}, refusing"
+    [[ ! -L "${context}" ]] || fail "${context} is a link, refusing"
+    mkdir -p "${context}/internal" || fail "cannot make ${context}/internal"
+fi
+
+pipe="${VALVE_HOME}/.steam/steam.pipe"
+mkdir -p "${VALVE_HOME}/.steam" "${RUN}" || fail "cannot make ${VALVE_HOME}/.steam or ${RUN}"
+[[ -p "${pipe}" && ! -L "${pipe}" ]] || mkfifo "${pipe}" || fail "cannot make the FIFO ${pipe}"
+
+exec {run_lock}<"${RUN}"
+flock -w 10 -x "${run_lock}" || fail "cannot lock ${RUN}"
+view=$(mktemp -d "${RUN}/tool.XXXXXXXX") || fail "cannot make a view in ${RUN}"
+exec {view_lock}<"${view}"
+flock -s "${view_lock}" || fail "cannot lock the view ${view}"
+if ! { mkdir "${view}/liblepton" && ln -s "${RUNTIME}/lepton" "${view}/lepton" \
+    && ln -s "${LIBLEPTON}" "${view}/liblepton/liblepton.sh"; }; then
+    rm -rf "${view:?}"
+    fail "cannot set up the view ${view}"
+fi
+for old in "${RUN}"/tool.*; do
+    [[ "${old}" != "${view}" && -d "${old}" && ! -L "${old}" ]] || continue
+    if { flock -n -x 9; } 9<"${old}"; then
+        rm -rf "${old:?}" || say "cannot remove the old view ${old}"
+    fi
+done
+exec {run_lock}<&-
+
+vars=(
+    "HOME=${VALVE_HOME}"
+    "PATH=${PATH}"
+    "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+    "XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
+    "XDG_DATA_HOME=${XDG_DATA_HOME}"
+    "XDG_STATE_HOME=${XDG_STATE_HOME}"
+    "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+    TERM=dumb
+    "STEAM_COMPAT_CLIENT_INSTALL_PATH=${STEAM_EMPTY}"
+    LEPTON_NO_CLEANUP=true
+    LEPTON_KEEP_CONTEXT=1
+    "MICROEMU_LEPTON_RUNTIME=${RUNTIME}"
+    "MICROEMU_LEPTON_REVIEWED=${REVIEWED}"
+)
+for var in APP_WANTS_FLATSCREEN GAMESCOPE_WAYLAND_DISPLAY CONTAINERS_CONF_OVERRIDE STEAM_COMPAT_DATA_PATH \
+    LEPTON_ADB_PORT LEPTON_GDB_PORT LEPTON_LLDB_PORT; do
+    [[ -v "${var}" ]] && vars+=("${var}=${!var}")
+done
+exec env -i "${vars[@]}" "${view}/lepton" start "${name}"

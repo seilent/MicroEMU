@@ -1,0 +1,379 @@
+microemu_say() { printf 'microemu-liblepton: %s\n' "$*" >&2; }
+
+microemu_refuse() {
+    microemu_say "$*"
+    if [[ -n "${microemu_prefix:-}" ]]; then
+        rm -rf "${microemu_prefix:?}"
+    fi
+    exit 1
+}
+
+if [[ "${MICROEMU_LEPTON_RUNTIME:-}" != /* || ! -f "${MICROEMU_LEPTON_RUNTIME}/liblepton/liblepton.sh" ]]; then
+    microemu_say "no Lepton runtime in MICROEMU_LEPTON_RUNTIME (${MICROEMU_LEPTON_RUNTIME:-unset}), refusing"
+    exit 1
+fi
+microemu_lepton=$(readlink -f "${MICROEMU_LEPTON_RUNTIME}/lepton")
+if [[ "$(readlink -f "$0")" != "${microemu_lepton}" || "$(readlink "/proc/$$/fd/255")" != "${microemu_lepton}" ]]; then
+    microemu_say "$0 is not ${MICROEMU_LEPTON_RUNTIME}/lepton, refusing"
+    exit 1
+fi
+unset microemu_lepton
+if [[ "${COMMAND:-}" != start || $# -ne 2 ]]; then
+    microemu_say "only start <context> runs through MicroEMU, refusing ${*:-help}"
+    exit 1
+fi
+for microemu_var in SteamAppId STEAM_COMPAT_INSTALL_PATH STEAM_COMPAT_LIBRARY_PATHS STEAM_COMPAT_SHADER_PATH LEPTON_PREFIX \
+    $(compgen -v LEPTON_ENV_ || true); do
+    if [[ -v "${microemu_var}" ]]; then
+        microemu_say "${microemu_var} is set, refusing"
+        exit 1
+    fi
+done
+unset microemu_var
+case "${LEPTON_CONTEXT:-}" in
+    dev|sysbake|steamlaunch-*)
+        microemu_say "${LEPTON_CONTEXT} is a context name Lepton treats specially, refusing"
+        exit 1
+        ;;
+esac
+if [[ ! "${LEPTON_CONTEXT:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    microemu_say "bad context name ${LEPTON_CONTEXT:-}, refusing"
+    exit 1
+fi
+microemu_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+if [[ "$(readlink -m "${HOME}")" == "$(readlink -m "${microemu_home:-/}")" ]]; then
+    microemu_say "HOME is the home of $(id -un), refusing"
+    exit 1
+fi
+unset microemu_home
+if [[ -n "${STEAM_COMPAT_DATA_PATH:-}" \
+    && "${STEAM_COMPAT_DATA_PATH}" != "${HOME}/.local/share/lepton/contexts/${LEPTON_CONTEXT#headless-}" ]]; then
+    microemu_say "STEAM_COMPAT_DATA_PATH is not ${HOME}/.local/share/lepton/contexts/${LEPTON_CONTEXT#headless-}, refusing"
+    exit 1
+fi
+if compgen -G "${HOME}/.local/share/Steam/steamapps/appmanifest_*.acf" >/dev/null; then
+    microemu_say "${HOME}/.local/share/Steam/steamapps holds app manifests, refusing"
+    exit 1
+fi
+microemu_context=${LEPTON_CONTEXT}
+microemu_data=${STEAM_COMPAT_DATA_PATH:-}
+microemu_reviewed="${MICROEMU_LEPTON_REVIEWED:-/usr/share/microemu/android/lepton-reviewed}"
+if ! microemu_sums=$(export LC_ALL=C && cd "${MICROEMU_LEPTON_RUNTIME}" && sha256sum lepton liblepton/*.sh sysbake.xattrs) \
+    || [[ ! -f "${microemu_reviewed}" || "${microemu_sums}" != "$(cat "${microemu_reviewed}")" ]]; then
+    microemu_say "Lepton in ${MICROEMU_LEPTON_RUNTIME} is not the build in ${microemu_reviewed}, refusing"
+    exit 1
+fi
+if [[ "$(grep ro.build.version.sdk= "${MICROEMU_LEPTON_RUNTIME}/images/rootfs/system/build.prop" 2>/dev/null \
+    | sed 's/.*=//g')" != 30 ]]; then
+    microemu_say "Lepton in ${MICROEMU_LEPTON_RUNTIME} is not Android SDK 30, refusing"
+    exit 1
+fi
+unset microemu_sums microemu_reviewed
+microemu_rc=0
+podman container exists "lepton-${LEPTON_CONTEXT}" 2>/dev/null || microemu_rc=$?
+case "${microemu_rc}" in
+    1) ;;
+    0)
+        microemu_label=$(podman inspect --type container -f '{{ index .Config.Labels "STEAM_COMPAT_DATA_PATH" }}' \
+            "lepton-${LEPTON_CONTEXT}" 2>/dev/null) || microemu_label=
+        if [[ -z "${microemu_label}" || "${microemu_label}" != "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
+            microemu_say "lepton-${LEPTON_CONTEXT} belongs to ${microemu_label:-another flow}, refusing"
+            exit 1
+        fi
+        microemu_running=$(podman inspect --type container -f '{{.State.Running}}' "lepton-${LEPTON_CONTEXT}" 2>/dev/null) \
+            || microemu_running=
+        if [[ "${microemu_running}" != false ]]; then
+            microemu_say "lepton-${LEPTON_CONTEXT} runs, refusing"
+            exit 1
+        fi
+        ;;
+    *)
+        microemu_say "podman container exists failed (rc=${microemu_rc}), refusing"
+        exit 1
+        ;;
+esac
+unset microemu_rc microemu_label microemu_running
+
+source "${MICROEMU_LEPTON_RUNTIME}/liblepton/liblepton.sh"
+
+for microemu_fn in setup_mounts setup_props prepare_baked_data_for_removal clear_baked_app_data cleanup_container \
+    cleanup_all kill_all wipe_baked_system_data podman_network_options get_baked_app_data_dir data_mount_path \
+    kill_container podman_ip podman_subnet adb_port create_prefix setup_podman_mounts onexit_path; do
+    if ! declare -F "${microemu_fn}" >/dev/null; then
+        microemu_say "Lepton in ${MICROEMU_LEPTON_RUNTIME} has no ${microemu_fn}, refusing"
+        exit 1
+    fi
+done
+unset microemu_fn
+
+LEPTON_DATA_DIR="${HOME}/.local/share/lepton/contexts"
+APK_AUTO_INSTALL_DIR=/dev/null/microemu
+MDNS_PUBLISH_PATH=/bin/false
+STEAMVR_LOGS_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/microemu/lepton-logs"
+mkdir -p "${STEAMVR_LOGS_DIR}" || microemu_refuse "cannot make ${STEAMVR_LOGS_DIR}, refusing"
+microemu_prefix=
+
+eval "microemu_valve_$(declare -f create_prefix)"
+create_prefix() {
+    local had="${LEPTON_PREFIX:-}"
+    microemu_valve_create_prefix "$@"
+    [[ -n "${had}" ]] || microemu_prefix=${LEPTON_PREFIX:-}
+}
+
+microemu_holds_files() {
+    local rc=0
+    podman unshare bash -c '[[ -L "$1" || ! -e "$1" ]] && exit 1; [[ -d "$1" ]] || exit 0; c=$(ls -A -- "$1") || exit 2
+        [[ -n "${c}" ]]' _ "$1" || rc=$?
+    case "${rc}" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) microemu_refuse "cannot read $1 (rc=${rc}), refusing" ;;
+    esac
+}
+
+microemu_no_guest() {
+    local running
+    running=$(podman ps --filter label=lepton=true --format '{{.Names}}') \
+        || microemu_refuse "cannot list the running Lepton containers, refusing"
+    if [[ -n "${running}" ]]; then
+        microemu_refuse "${running//$'\n'/ } runs, refusing"
+    fi
+}
+
+microemu_check_context() {
+    local data baked ctx path pair host guest external target client entries
+    data=$(data_mount_path)
+    baked=${data%/data_overlay}
+    ctx=${baked%/baked}
+    for path in "${ctx}" "${ctx}/internal" "${ctx}/external" "${ctx}/media0" "${baked}" "${baked}/data_workdir" \
+        "${baked}/app_workdir" "${baked}/app_overlay" "${baked}/app_lowerdir" "${data}" "${data}/media" "${data}/misc" \
+        "${data}/misc/adb" "${data}/misc/ethernet" "${data}/misc/ethernet/ipconfig.txt" "${data}/steamvr" \
+        "${data}/steamvr/runtime" "${data}/steam_app"; do
+        if [[ -L "${path}" ]]; then
+            microemu_refuse "${path} is a link, refusing"
+        fi
+    done
+    client=${STEAM_COMPAT_CLIENT_INSTALL_PATH:-}
+    if [[ -n "${client}" ]] && ! { [[ -d "${client}" && ! -L "${client}" ]] \
+        && entries=$(find "${client}" -mindepth 1 -print -quit) && [[ -z "${entries}" ]]; }; then
+        microemu_refuse "STEAM_COMPAT_CLIENT_INSTALL_PATH ${client} is not an empty directory, refusing"
+    fi
+    if [[ -d "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
+        external="${STEAM_COMPAT_DATA_PATH}/external"
+        [[ -d "${external}" ]] || external="${STEAM_COMPAT_DATA_PATH}/media0"
+        for pair in Documents:Documents Downloads:Download Videos:Movies; do
+            host="${HOME}/${pair%%:*}"
+            guest="${external}/${pair#*:}"
+            if [[ -d "${host}" ]] && microemu_holds_files "${guest}"; then
+                microemu_refuse "Lepton replaces ${guest} with a link to ${host} at start, move what it holds into ${host} first"
+            fi
+        done
+        target="into ${STEAM_COMPAT_DATA_PATH}/external"
+    else
+        target="out of ${ctx}"
+    fi
+    if microemu_holds_files "${data}/media/0"; then
+        microemu_refuse "Lepton deletes ${data}/media/0 at start, move what it holds ${target} first"
+    fi
+}
+
+microemu_narrow_bind() {
+    local i found=0 external bind="type=bind,source=${LEPTON_DATA_DIR},destination=${LEPTON_DATA_DIR},rw"
+    local -a cmdline=()
+    for (( i = 0; i < ${#PODMAN_CMDLINE[@]}; i++ )); do
+        if [[ "${PODMAN_CMDLINE[i]}" == --mount && "${PODMAN_CMDLINE[i + 1]:-}" == "${bind}" ]]; then
+            found=$((found + 1))
+            i=$((i + 1))
+            if [[ -d "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
+                external="${STEAM_COMPAT_DATA_PATH}/external"
+                cmdline+=(--mount "type=bind,source=${external},destination=${external},rw")
+            fi
+        else
+            cmdline+=("${PODMAN_CMDLINE[i]}")
+        fi
+    done
+    (( found == 1 )) || microemu_refuse "Lepton binds ${LEPTON_DATA_DIR} ${found} times, not once, refusing"
+    PODMAN_CMDLINE=("${cmdline[@]}")
+}
+
+microemu_podman_mounts() {
+    local i bind shm=0 runtime=0 logs=0
+    local -a cmdline=()
+    for (( i = 0; i < ${#PODMAN_CMDLINE[@]}; i++ )); do
+        if [[ "${PODMAN_CMDLINE[i]}" != --mount ]]; then
+            cmdline+=("${PODMAN_CMDLINE[i]}")
+            continue
+        fi
+        i=$((i + 1))
+        bind=${PODMAN_CMDLINE[i]:-}
+        case "${bind}" in
+            type=bind,source=/dev/shm,destination=/dev/shm,rw)
+                shm=$((shm + 1))
+                cmdline+=(--tmpfs "/dev/shm:rw,nosuid,nodev,noexec")
+                ;;
+            type=bind,source=*,destination=/data/steamvr/runtime,rw)
+                runtime=$((runtime + 1))
+                cmdline+=(--mount "${bind%,rw},ro")
+                ;;
+            "type=bind,source=${STEAMVR_LOGS_DIR},destination=/data/steamvr/logs,rw")
+                logs=$((logs + 1))
+                ;;
+            *)
+                cmdline+=(--mount "${bind}")
+                ;;
+        esac
+    done
+    (( shm == 1 )) || microemu_refuse "Lepton binds /dev/shm ${shm} times, not once, refusing"
+    (( runtime == 1 )) || microemu_refuse "Lepton binds /data/steamvr/runtime ${runtime} times, not once, refusing"
+    (( logs == 1 )) || microemu_refuse "Lepton binds ${STEAMVR_LOGS_DIR} ${logs} times, not once, refusing"
+    PODMAN_CMDLINE=("${cmdline[@]}")
+}
+
+microemu_same_start() {
+    local var
+    if [[ "${LEPTON_CONTEXT:-}" != "${microemu_context}" || "${STEAM_COMPAT_DATA_PATH:-}" != "${microemu_data}" ]]; then
+        microemu_refuse "Lepton switched to ${LEPTON_CONTEXT:-} on ${STEAM_COMPAT_DATA_PATH:-}, refusing"
+    fi
+    for var in SteamAppId STEAM_COMPAT_INSTALL_PATH STEAM_COMPAT_LIBRARY_PATHS STEAM_COMPAT_SHADER_PATH \
+        $(compgen -v LEPTON_ENV_ || true); do
+        if [[ -v "${var}" ]]; then
+            microemu_refuse "Lepton set ${var}, refusing"
+        fi
+    done
+}
+
+microemu_audit_mounts() {
+    local arg prev="" spec part conf source canonical ok data baked
+    local -a parts sources=() allowed=()
+    data=$(readlink -m "${LEPTON_DATA_DIR}")
+    baked=$(get_baked_app_data_dir)
+    for source in "${baked}/data_overlay" "${baked}/data_workdir" "${baked}/app_overlay" "${baked}/app_workdir" \
+        "${baked}/app_lowerdir"; do
+        allowed+=("$(readlink -m "${source}")")
+    done
+    if [[ -n "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
+        allowed+=("$(readlink -m "${STEAM_COMPAT_DATA_PATH}/external")")
+    fi
+    for arg in "${PODMAN_CMDLINE[@]}"; do
+        case "${prev}" in
+            -v|--volume) sources+=("${arg%%:*}") ;;
+        esac
+        case "${arg}" in
+            -v=*|--volume=*)
+                spec=${arg#*=}
+                sources+=("${spec%%:*}")
+                ;;
+        esac
+        IFS=, read -ra parts <<< "${arg}"
+        for part in "${parts[@]}"; do
+            case "${part}" in
+                source=*|src=*|upperdir=*|workdir=*) sources+=("${part#*=}") ;;
+            esac
+        done
+        prev=${arg}
+    done
+    if [[ -n "${CONTAINERS_CONF_OVERRIDE:-}" ]]; then
+        conf=$(cat -- "${CONTAINERS_CONF_OVERRIDE}") || microemu_refuse "cannot read ${CONTAINERS_CONF_OVERRIDE}, refusing"
+        if grep -qE '^[[:space:]]*volumes[[:space:]]*=' <<< "${conf}"; then
+            microemu_refuse "${CONTAINERS_CONF_OVERRIDE} sets volumes, refusing"
+        fi
+        mapfile -t -O "${#sources[@]}" sources < <(grep -oE '(source|src|upperdir|workdir)=[^,"]*' <<< "${conf}" \
+            | sed 's/^[a-z]*=//')
+    fi
+    for source in "${sources[@]}"; do
+        canonical=$(readlink -m "${source}") || continue
+        [[ "${canonical}" == "${data}" || "${data}" == "${canonical%/}/"* || "${canonical}" == "${data}/"* ]] || continue
+        ok=0
+        for arg in "${allowed[@]}"; do
+            [[ "${canonical}" != "${arg}" ]] || ok=1
+        done
+        (( ok )) || microemu_refuse "Lepton binds ${source}, at, above or under ${LEPTON_DATA_DIR}, refusing"
+    done
+}
+
+microemu_adb_keys() {
+    local keys="${XDG_CONFIG_HOME:?}/microemu/adb_keys" home
+    [[ -f "${keys}" ]] || keys=/dev/null
+    [[ "$1" == "${HOME}"/* ]] || microemu_refuse "$1 is not under ${HOME}, refusing"
+    home=$(cd -P "${HOME}" && pwd -P) || microemu_refuse "cannot resolve ${HOME}, refusing"
+    if ! podman unshare sh -c 'cd -P "$1" && [ "$(pwd -P)" = "$5" ] && for d in misc adb; do
+            { [ -d "$d" ] && [ ! -L "$d" ]; } || mkdir "$d" && cd -P "$d" || exit 1
+        done && chown -h "$2" . && chmod "$3" . && rm -f adb_keys.new && set -C && cat > adb_keys.new &&
+        chown -h "$2" adb_keys.new && chmod "$4" adb_keys.new && mv -fT adb_keys.new adb_keys' \
+        sh "$1" "$2" "$3" "$4" "${home}${1#"${HOME}"}" < "${keys}"; then
+        microemu_refuse "cannot write $1/misc/adb/adb_keys, refusing"
+    fi
+}
+
+eval "microemu_valve_$(declare -f setup_mounts)"
+setup_mounts() {
+    microemu_no_guest
+    microemu_same_start
+    microemu_check_context
+    if [[ -z "${microemu_prefix}" || "${LEPTON_PREFIX:-}" != "${microemu_prefix}" ]]; then
+        microemu_refuse "LEPTON_PREFIX=${LEPTON_PREFIX:-} is not the prefix this start made, refusing"
+    fi
+    microemu_valve_setup_mounts "$@"
+    microemu_narrow_bind
+}
+
+eval "microemu_valve_$(declare -f setup_podman_mounts)"
+setup_podman_mounts() {
+    microemu_valve_setup_podman_mounts "$@"
+    microemu_podman_mounts
+}
+
+onexit_path() {
+    printf '%s' "${SCRIPT_DIR}/lepton-on-app-exit"
+}
+
+eval "microemu_valve_$(declare -f setup_props)"
+setup_props() {
+    microemu_valve_setup_props "$@"
+    microemu_no_guest
+    microemu_audit_mounts
+    microemu_adb_keys "$(data_mount_path)" 1000:2000 02750 0640
+}
+
+prepare_baked_data_for_removal() {
+    local baked dir context="${1:-${LEPTON_CONTEXT}}"
+    baked=$(get_baked_app_data_dir "$@")
+    [[ "${baked}" == /?*/baked && -d "${baked}" && ! -L "${baked}" ]] || return 0
+    if [[ "$(podman inspect --type container -f '{{.State.Running}}' "lepton-${context}" 2>/dev/null)" == true ]]; then
+        microemu_say "lepton-${context} still runs, kept the workdirs in ${baked}"
+        return 0
+    fi
+    for dir in "${baked}/app_workdir" "${baked}/data_workdir"; do
+        [[ -d "${dir}" && ! -L "${dir}" ]] || continue
+        if ! { chmod -R 700 "${dir}" && rm -rf "${dir:?}"; }; then
+            microemu_say "cannot clear ${dir}"
+        fi
+    done
+}
+
+clear_baked_app_data() {
+    microemu_say "kept the baked app data, asked to clear it for ${1:-no reason}"
+}
+
+cleanup_container() {
+    kill_container "${1:-${LEPTON_CONTEXT}}"
+}
+
+cleanup_all() {
+    microemu_refuse "cleanup_all deletes every context, refusing"
+}
+
+kill_all() {
+    microemu_refuse "kill_all stops every Lepton container, refusing"
+}
+
+wipe_baked_system_data() {
+    microemu_refuse "wipe_baked_system_data deletes the runtime's sysbake, refusing"
+}
+
+podman_network_options() {
+    local options
+    options="-I eth0 --ipv4-only --no-ndp -a $(podman_ip) -g $(podman_subnet).1 -m 1500 --no-dhcpv6 --no-dhcp"
+    options+=" -t 127.0.0.1/$(adb_port) --no-splice --map-guest-addr none --dns-forward $(podman_subnet).1"
+    printf '%s' "--network=pasta:${options// /,}"
+}

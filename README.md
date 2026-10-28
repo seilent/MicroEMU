@@ -333,7 +333,7 @@ runs `microemu-play-run`, which writes `$XDG_RUNTIME_DIR/microemu/lepton/contain
 |---|---|
 | annotation | `run.oci.systemd.subgroup=app-steam-app1-1.scope`: gamescope takes the Android window's appid from the container's cgroup name, so it can take focus over ES-DE |
 | mounts | each `xb360` node at the same path, `rw`; `$XDG_RUNTIME_DIR/microemu/lepton/odm-build.prop` over `/vendor/odm/etc/build.prop`, `ro` |
-| odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density` from `/usr/share/microemu/android/display` (`density=213`: a portrait app's 426 px column is 320 dp), `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off) and `pm.dexopt.install=speed` (installs and updates compile with `speed`) |
+| odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density` from `/usr/share/microemu/android/display` (`density=213`: a portrait app's 426 px column is 320 dp), `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off), `pm.dexopt.install=speed` (installs and updates compile with `speed`) and `ro.adb.secure=1` (adbd takes only the keys in `/data/misc/adb/adb_keys`; the Lepton view writes them from `~/.config/microemu/adb_keys`; `lepton-armada` writes none, so through it every adb client is `unauthorized` and gets no dialog) |
 | environment | `TERM=dumb`, `APP_WANTS_FLATSCREEN=true`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`, `STEAM_COMPAT_DATA_PATH` the context (shared storage kept in `external/`), `LEPTON_NO_CLEANUP=true`, `LEPTON_KEEP_CONTEXT=1`, no `SteamAppId` or `LD_LIBRARY_PATH`; `internal/` created first |
 
 Lepton's output before the boot goes to the journal, after it to `~/.local/share/microemu/android/lepton.log`. A
@@ -360,7 +360,9 @@ start), through `cmd_real`. They come from BruhMeh's
 1, `alarm_manager_constants` `allow_while_idle_short_time=10000,allow_while_idle_long_time=20000`,
 `captive_portal_mode` 0 (the script has 2), and `disable-user` for `com.android.printspooler`, `com.android.bips`,
 `com.android.dreams.phototable`, `com.android.managedprovisioning` and `com.android.stk` when the package exists
-(Lepton's image has none of them, so they are recorded absent). Each
+(Lepton's image has none of them, so they are recorded absent). Not from the script: `package disable --user 0
+com.android.systemui/.usb.UsbDebuggingActivity`, so an adb key not in `adb_keys` gets no USB debugging dialog, and
+`adb_allowed_connection_time` 0, so Android keeps a key in `adb_keys` that has not connected for 7 days. Each
 line has an id; `microemu-opts` in the context holds the ids done (or absent), a failed one is logged and retried at the
 next start, and an `unset <id>` line runs its undo command once for an id that was applied. Left out of the script:
 the background restrictions on GMS and Play (`RUN_IN_BACKGROUND`, the restricted standby bucket, the GMS appops), so
@@ -402,6 +404,51 @@ own stop never counts), then force-stops the launched package (`$XDG_RUNTIME_DIR
 `microemu-stop` stops the game, then ES-DE, then waits for the unit with what is left of its 15 s. B on the game's root
 activity reaches ES-DE about 2.6 to 3 s after the press (the watcher about 0.9 s plus up to 1 s waiting for the
 game's onStop, measured 0.3 s; the container stop about 1.7 s).
+
+### Lepton View
+
+`microemu-lepton start <context>` runs the Lepton tree in `MICROEMU_LEPTON_RUNTIME` through a view made for each start,
+`$XDG_RUNTIME_DIR/microemu/lepton/tool.<random>/`, whose `lepton` links to the runtime's and `liblepton/liblepton.sh` to
+`microemu-liblepton.sh`. The start holds a shared `flock` on its view for as long as Lepton runs, and removes the views
+no one holds. Lepton gets only `HOME` (`~/.local/share/microemu/android/home`, `.steam/steam.pipe` made as a FIFO),
+`PATH`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `DBUS_SESSION_BUS_ADDRESS`, `TERM=dumb`,
+`STEAM_COMPAT_CLIENT_INSTALL_PATH=/usr/share/microemu/android/steam-empty` (an empty dir), `LEPTON_NO_CLEANUP=true`,
+`LEPTON_KEEP_CONTEXT=1`, `MICROEMU_LEPTON_RUNTIME`, `MICROEMU_LEPTON_REVIEWED`, and when set `APP_WANTS_FLATSCREEN`,
+`GAMESCOPE_WAYLAND_DISPLAY`, `CONTAINERS_CONF_OVERRIDE`, `STEAM_COMPAT_DATA_PATH`, `LEPTON_ADB_PORT`, `LEPTON_GDB_PORT` and
+`LEPTON_LLDB_PORT`. Exit 1 for any other verb, a context name Lepton treats specially (`dev`, `sysbake`,
+`steamlaunch-*`), a runtime whose `lepton`, `liblepton/*.sh` and `sysbake.xattrs` differ from the sha256 list in
+`/usr/share/microemu/android/lepton-reviewed` (Valve's v3.0.5, Steam build 25772114) or whose
+`images/rootfs/system/build.prop` is not `ro.build.version.sdk=30`, and a `STEAM_COMPAT_DATA_PATH` other than
+`.local/share/lepton/contexts/<context>` under that `HOME` (`headless-<context>` uses the `<context>` dir). That dir gets
+`internal/` before the start.
+
+Any call of a view's `lepton` goes through `microemu-liblepton.sh`. It exits 1 unless `$0` and the file bash reads the
+script from (`/proc/$$/fd/255`) are the runtime's `lepton`, the call is `start <context>` with a name the launcher
+allows, `HOME` is not the account's home, `STEAM_COMPAT_DATA_PATH` is unset or that context's dir, none of
+`SteamAppId`, `STEAM_COMPAT_INSTALL_PATH`, `STEAM_COMPAT_LIBRARY_PATHS`, `STEAM_COMPAT_SHADER_PATH`, `LEPTON_PREFIX` and
+`LEPTON_ENV_*` is set, that `HOME` has no `.local/share/Steam/steamapps/appmanifest_*.acf` (Lepton would start the app
+whose name is the context's as `steamlaunch-<appid>`), the runtime passes the launcher's sha256 and SDK checks against
+`MICROEMU_LEPTON_REVIEWED`, and a `lepton-<context>` container, when podman has one, carries this start's
+`STEAM_COMPAT_DATA_PATH` label and is not running (Lepton would stop, remove and replace it, and take its prefix). Then
+it sources the runtime's `liblepton/liblepton.sh`, exits 1 when
+a function it replaces or calls is missing, sets `LEPTON_DATA_DIR` to `.local/share/lepton/contexts` under that `HOME`,
+`APK_AUTO_INSTALL_DIR=/dev/null/microemu`, `MDNS_PUBLISH_PATH=/bin/false` and `STEAMVR_LOGS_DIR` (Lepton's log and the
+early exit logcats) to `$XDG_STATE_HOME/microemu/lepton-logs`, a dir no guest gets, and replaces:
+
+| Function | Does |
+|---|---|
+| `setup_mounts` | exit 1 while any `label=lepton=true` container runs; when Lepton changed the context name or `STEAM_COMPAT_DATA_PATH`, or set `SteamAppId`, `STEAM_COMPAT_INSTALL_PATH`, `STEAM_COMPAT_LIBRARY_PATHS`, `STEAM_COMPAT_SHADER_PATH` or a `LEPTON_ENV_*`, after the checks above; where Lepton's own would delete files: `external/Documents`, `Download` or `Movies` of the context (`media0/` when there is no `external/`) holding files, or a file, while `Documents`, `Downloads` or `Videos` exists under that `HOME`, or `baked/data_overlay/media/0` a file or a real dir holding files (the message names the move to make); when the context, `internal`, `external`, `media0`, `baked`, its `data_workdir`, `app_workdir`, `app_overlay`, `app_lowerdir`, `data_overlay`, or `media`, `misc`, `misc/adb`, `misc/ethernet`, `misc/ethernet/ipconfig.txt`, `steamvr`, `steamvr/runtime`, `steam_app` under it is a link; when `STEAM_COMPAT_CLIENT_INSTALL_PATH` is not an empty dir; when `LEPTON_PREFIX` is not the prefix this start made (Lepton takes the prefix of a running `lepton-<context>`). Then Lepton's own, with its read write bind of `LEPTON_DATA_DIR` replaced by a bind of the context's `external/` at the same path (none without `STEAM_COMPAT_DATA_PATH`); exit 1 when that bind is not there once |
+| `setup_podman_mounts` | Lepton's own, with its read write bind of the host `/dev/shm` replaced by a private `--tmpfs /dev/shm:rw,nosuid,nodev,noexec`, its read write bind of `$(steamvr path)` at `/data/steamvr/runtime` made read only, and its bind of `STEAMVR_LOGS_DIR` at `/data/steamvr/logs` dropped (the guest's SteamVR logs stay in its `/data`); exit 1 when any of the three is not there once |
+| `onexit_path` | `lepton-on-app-exit` in the start's view instead of `data_overlay` (Lepton touches it after the container stops) |
+| `setup_props` | Lepton's own, exit 1 while any `label=lepton=true` container runs, when a mount source in the podman options or in `CONTAINERS_CONF_OVERRIDE` (a `source=`, `src=`, `upperdir=` or `workdir=` value, the source of a `-v`) is `LEPTON_DATA_DIR`, above it or under it, other than the context's `external/` and the overlay dirs `baked/data_overlay`, `data_workdir`, `app_overlay`, `app_workdir`, `app_lowerdir`, or when that file sets `volumes` or cannot be read; then `~/.config/microemu/adb_keys` (empty when absent) into `data_overlay/misc/adb/adb_keys` through `podman unshare`, `data_overlay` entered with `cd -P` only when `pwd -P` is its path, then `misc` and `adb` made or entered one at a time, each refused when it is a link: owner `1000:2000` (system:shell, `chown -h`), dir 02750, file 0640, written to a new `adb_keys.new` with noclobber and renamed; exit 1 otherwise |
+| `prepare_baked_data_for_removal` | clears only `baked/app_workdir` and `baked/data_workdir`, none while the container still runs |
+| `clear_baked_app_data` | deletes nothing, logs the reason |
+| `cleanup_container` | stops the container, keeps the settings files |
+| `cleanup_all`, `kill_all`, `wipe_baked_system_data` | exit 1 |
+| `podman_network_options` | pasta with `-t 127.0.0.1/<adb port>` as the only forward, no `--map-gw`, `--map-guest-addr none` (podman maps `169.254.1.2` to the host's address otherwise) |
+
+An exit 1 after Lepton made its `/tmp/lepton-context.*` prefix removes the prefix; a prefix taken from a running
+container is kept.
 
 ### Google Play
 

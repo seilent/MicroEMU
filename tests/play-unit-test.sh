@@ -153,7 +153,7 @@ grep -qx "lepton start microemu-play" "${STATE}/events" || fail "lepton not run 
 grep -qx 'annotations = \["run.oci.systemd.subgroup=app-steam-app1-1.scope"\]' "${conf}" || fail "annotation missing: $(cat "${conf}")"
 expected_mounts="mounts = [\"type=bind,source=/dev/input/event10,destination=/dev/input/event10,rw\",\"type=bind,source=/dev/input/event12,destination=/dev/input/event12,rw\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\"]"
 grep -qxF "${expected_mounts}" "${conf}" || fail "mounts: $(cat "${conf}")"
-[[ "$(cat "${odm}")" == $'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\nro.sf.lcd_density=213\nqemu.hw.mainkeys=1\ndebug.mesa.tu.debug=noubwc\npm.dexopt.install=speed' ]] || fail "odm prop: $(cat "${odm}")"
+[[ "$(cat "${odm}")" == $'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\nro.sf.lcd_density=213\nqemu.hw.mainkeys=1\ndebug.mesa.tu.debug=noubwc\npm.dexopt.install=speed\nro.adb.secure=1' ]] || fail "odm prop: $(cat "${odm}")"
 expected_events="notify EXTEND_TIMEOUT_USEC=120000000
 lepton start microemu-play
 out starting
@@ -173,14 +173,16 @@ script="${STATE}/opts-script-1"
 for line in "s 'wifi-scan' 'settings' 'put' 'global' 'wifi_scan_always_enabled' '0'" \
     "s 'captive-portal' 'settings' 'put' 'global' 'captive_portal_mode' '0'" \
     "s 'idle-alarms' 'settings' 'put' 'global' 'alarm_manager_constants' 'allow_while_idle_short_time=10000,allow_while_idle_long_time=20000'" \
+    "s 'adb-dialog' 'package' 'disable' '--user' '0' 'com.android.systemui/.usb.UsbDebuggingActivity'" \
+    "s 'adb-expiry' 'settings' 'put' 'global' 'adb_allowed_connection_time' '0'" \
     "p 'printspooler' 'com.android.printspooler'" "p 'stk' 'com.android.stk'"; do
     grep -qxF "${line}" "${script}" || fail "opts: missing ${line}: $(cat "${script}")"
 done
 grep -qE "appops|set-standby-bucket|com\.google\.android\.gms|com\.android\.vending|trim-caches|use_freezer|use_fifo_ui|sensor_privacy|job_scheduler" "${script}" \
     && fail "opts: an excluded command was sent: $(cat "${script}")"
-[[ "$(grep -c '^[spu] ' "${script}")" == 11 ]] || fail "opts: $(grep -c '^[spu] ' "${script}") commands, expected 11"
-[[ "$(wc -l < "${opts}")" == 11 ]] || fail "opts stamp: $(cat "${opts}")"
-grep -q "guest settings: 11 applied, 0 failed" "${STATE}/stderr" || fail "opts: no summary: $(cat "${STATE}/stderr")"
+[[ "$(grep -c '^[spu] ' "${script}")" == 13 ]] || fail "opts: $(grep -c '^[spu] ' "${script}") commands, expected 13"
+[[ "$(wc -l < "${opts}")" == 13 ]] || fail "opts stamp: $(cat "${opts}")"
+grep -q "guest settings: 13 applied, 0 failed" "${STATE}/stderr" || fail "opts: no summary: $(cat "${STATE}/stderr")"
 
 reset "Boot complete!;sleep 0.2;exit 0"
 run

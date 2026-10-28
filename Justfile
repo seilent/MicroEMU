@@ -37,3 +37,4 @@ test-android:
     bash tests/gapps-install-test.sh
     bash tests/play-update-test.sh
     bash tests/sync-test.sh
+    bash tests/lepton-test.sh
