@@ -1,6 +1,8 @@
 #!/usr/bin/bash
 set -u
 
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-apk: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
 SESSION=gamescope-session-plus@microemu.service
 LEPTON="${MICROEMU_LEPTON:-/usr/share/steam/compatibilitytools.d/lepton-armada/lepton}"
 SIDELOAD="${MICROEMU_SIDELOAD:-/usr/libexec/microemu/microemu-sideload}"
@@ -9,7 +11,7 @@ UPDATE="${MICROEMU_PLAY_UPDATE:-/usr/bin/microemu-play-update}"
 GAME_FREE="${MICROEMU_GAME_FREE:-/usr/libexec/microemu/microemu-game-free}"
 PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
 PAD_FUZZ="${MICROEMU_PAD_FUZZ:-/usr/libexec/microemu/microemu-pad-fuzz}"
-CONTAINER=lepton-microemu-play
+CONTAINER=lepton-${PLAY_NAME}
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 MARKER="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/play-stop-requested"
 
@@ -39,11 +41,11 @@ if [[ "${1:-}" != --body ]]; then
     esac
     systemctl --user stop microemu-play-update.service >/dev/null 2>&1 || true
     systemctl --user reset-failed microemu-play-update.service >/dev/null 2>&1 || true
-    if podman container exists lepton-headless-microemu-play 2>/dev/null; then
+    if podman container exists "lepton-headless-${PLAY_NAME}" 2>/dev/null; then
         case "$(systemctl --user show -P ActiveState microemu-play-update.service 2>/dev/null)" in
             inactive|failed|"")
-                podman rm -f lepton-headless-microemu-play >/dev/null 2>&1
-                say "removed a leftover lepton-headless-microemu-play"
+                podman rm -f "lepton-headless-${PLAY_NAME}" >/dev/null 2>&1
+                say "removed a leftover lepton-headless-${PLAY_NAME}"
                 ;;
         esac
     fi

@@ -12,7 +12,7 @@ T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
 mkdir -p "${T}/bin"
 export STATE="${T}/state"
-export MICROEMU_PLAY_CONTEXT="${T}/context"
+export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
 export MICROEMU_ANDROID_DATA="${T}/data"
 export MICROEMU_ANDROID_CACHE="${T}/cache"
 export MICROEMU_ANDROID_ROMS="${T}/roms"
@@ -31,6 +31,7 @@ esac
 STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
+echo "$1 $2" >> "${STATE}/container"
 shift 2
 echo "$*" >> "${STATE}/guest"
 case "$*" in
@@ -285,6 +286,37 @@ for kind in missing empty dangling; do
     cmp -s "${states}/com.uberspot.a2048" "${T}/state.before" || fail "state touched: $(cat "${states}/com.uberspot.a2048")"
     rm -rf "${MICROEMU_ANDROID_ROMS}"
 done
+
+case_name="named"
+named="${T}/contexts/probe-lh-copy"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+MICROEMU_PLAY_NAME=probe-lh-copy MICROEMU_PLAY_CONTEXT="${named}" run install "${a2048}"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(sort -u "${STATE}/container")" == "exec lepton-probe-lh-copy" ]] || fail "containers: $(sort -u "${STATE}/container")"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+mkdir -p "${MICROEMU_ANDROID_ROMS}/obb"
+echo data > "${MICROEMU_ANDROID_ROMS}/obb/main.25.com.uberspot.a2048.obb"
+mkdir -p "${T}/home/.local/share/lepton/contexts"
+MICROEMU_PLAY_NAME=probe-lh-copy HOME="${T}/home" MICROEMU_PLAY_CONTEXT='' run prepare "${a2048}"
+[[ "${rc}" == 0 && -f "${T}/home/.local/share/lepton/contexts/probe-lh-copy/external/Android/obb/com.uberspot.a2048/main.25.com.uberspot.a2048.obb" ]] \
+    || fail "default context: exit ${rc}, obb not in its own context: $(cat "${STATE}/stderr")"
+[[ ! -e "${T}/home/.local/share/lepton/contexts/microemu-play" && ! -e "${MICROEMU_PLAY_CONTEXT}" ]] || fail "default context: obb copied into microemu-play"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+mkdir -p "${MICROEMU_ANDROID_ROMS}/obb"
+echo data > "${MICROEMU_ANDROID_ROMS}/obb/main.25.com.uberspot.a2048.obb"
+MICROEMU_PLAY_NAME=probe-lh-copy run prepare "${a2048}"
+[[ "${rc}" == 1 ]] && grep -qx "microemu-sideload: ${MICROEMU_PLAY_CONTEXT} is not a probe-lh-copy context, refusing" "${STATE}/stderr" \
+    || fail "on the microemu-play context: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ ! -e "${MICROEMU_PLAY_CONTEXT}" && ! -e "${STATE}/container" ]] || fail "on the microemu-play context: obb copied or podman called"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+MICROEMU_PLAY_NAME=Bad run install "${a2048}"
+[[ "${rc}" == 1 ]] && grep -qx "microemu-sideload: bad MICROEMU_PLAY_NAME Bad" "${STATE}/stderr" || fail "bad name: exit ${rc}"
+[[ ! -e "${STATE}/container" ]] || fail "bad name: podman called"
+rm -rf "${named:?}" "${T:?}/home"
 
 case_name="prune with nothing stale"
 reset

@@ -1,7 +1,9 @@
 #!/usr/bin/bash
 set -u
 
-CONTAINER=lepton-microemu-play
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-apk-watch: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
+CONTAINER=lepton-${PLAY_NAME}
 STOP_WAIT_MS="${MICROEMU_STOP_WAIT_MS:-1000}"
 pkg=$1
 activity=${2:-}

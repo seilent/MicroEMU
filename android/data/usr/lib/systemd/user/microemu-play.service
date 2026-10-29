@@ -5,7 +5,8 @@ BindsTo=gamescope-session-plus@microemu.service
 [Service]
 Type=notify
 NotifyAccess=all
-ExecStartPre=/usr/bin/podman rm -fi lepton-microemu-play
+Environment=MICROEMU_PLAY_NAME=microemu-play
+ExecStartPre=/usr/bin/podman rm -fi lepton-${MICROEMU_PLAY_NAME}
 ExecStart=/usr/libexec/microemu/microemu-play-run
 ExecStop=/usr/libexec/microemu/microemu-play-stop
 ExecStopPost=/usr/libexec/microemu/microemu-play-stop --post

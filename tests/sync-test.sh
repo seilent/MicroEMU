@@ -9,7 +9,7 @@ sync="${repo}/android/data/usr/libexec/microemu/microemu-android-sync"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
-export MICROEMU_PLAY_CONTEXT="${T}/context"
+export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
 export MICROEMU_ANDROID_ROMS="${T}/roms"
 export MICROEMU_GAPPS="${T}/gapps"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
@@ -22,7 +22,7 @@ failures=0
 fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 fixture() {
-    rm -rf "${T}/context" "${T}/roms" "${T}/gapps" "${MICROEMU_ANDROID_DATA}"
+    rm -rf "${MICROEMU_PLAY_CONTEXT}" "${T}/roms" "${T}/gapps" "${MICROEMU_ANDROID_DATA}"
     mkdir -p "${data}/system" "${data}/data/com.android.launcher3/databases" "${MICROEMU_ANDROID_ROMS}"
     cat > "${data}/system/packages.xml" <<'XML'
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
@@ -236,6 +236,25 @@ mkdir -p "${MICROEMU_ANDROID_ROMS}/sub"
 : > "${MICROEMU_ANDROID_ROMS}/sub/Mine.update"
 run
 [[ ! -e "${entry}" ]] || fail "update entry written next to an existing .update elsewhere"
+
+fixture
+rc=0
+MICROEMU_PLAY_NAME=probe-lh-copy "${sync}" 2> "${T}/err" || rc=$?
+[[ "${rc}" == 1 && "$(cat "${T}/err")" == "microemu-android-sync: ${MICROEMU_PLAY_CONTEXT} is not a probe-lh-copy context, refusing" ]] \
+    || fail "named on the microemu-play context: exit ${rc}: $(cat "${T}/err")"
+[[ ! -e "${MICROEMU_ANDROID_ROMS}/Play Game Deluxe Edition.play" ]] || fail "named on the microemu-play context: entries written"
+fixture
+rc=0
+MICROEMU_PLAY_NAME=Bad "${sync}" 2> "${T}/err" || rc=$?
+[[ "${rc}" == 1 && "$(cat "${T}/err")" == "microemu-android-sync: bad MICROEMU_PLAY_NAME Bad" ]] || fail "bad name: exit ${rc}: $(cat "${T}/err")"
+fixture
+mkdir -p "${T}/home/.local/share/lepton/contexts"
+mv "${MICROEMU_PLAY_CONTEXT}" "${T}/home/.local/share/lepton/contexts/probe-lh-copy"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT MICROEMU_PLAY_NAME=probe-lh-copy HOME="${T}/home" "${sync}" 2> "${T}/err" || rc=$?
+[[ "${rc}" == 0 && "$(cat "${MICROEMU_ANDROID_ROMS}/Play Game Deluxe Edition.play" 2>/dev/null)" == com.example.playgame ]] \
+    || fail "named, default context: exit ${rc}: $(cat "${T}/err")"
+rm -rf "${T:?}/home"
 
 if (( failures )); then
     echo "sync-test: ${failures} failure(s)" >&2

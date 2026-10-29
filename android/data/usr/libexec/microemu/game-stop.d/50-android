@@ -3,7 +3,9 @@ set -u
 
 RUN_DIR="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}"
 MARKER="${RUN_DIR}/play-stop-requested"
-CONTAINER=lepton-microemu-play
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "50-android: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
+CONTAINER=lepton-${PLAY_NAME}
 
 state=$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)
 case "${state}" in

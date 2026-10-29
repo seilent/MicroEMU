@@ -28,6 +28,20 @@ case "$1 $2" in
     "container exists") [[ -e "${STATE}/exists_rc" ]] && exit "$(cat "${STATE}/exists_rc")"; [[ -e "${STATE}/container-$3" ]] ;;
     "unshare chmod") shift 2; chmod "$@" ;;
     "unshare rm") shift 2; rm "$@" ;;
+    "ps -a")
+        case "$*" in
+            *label=lepton=true*) [[ "$(cat "${STATE}/ps_fail" 2>/dev/null)" != leptons ]] || exit 125 ;;
+            *) [[ "$(cat "${STATE}/ps_fail" 2>/dev/null)" != users ]] || exit 125 ;;
+        esac
+        for f in "${STATE}"/container-*; do
+            [[ -e "${f}" ]] || continue
+            case "$*" in
+                *label=lepton=true*) grep -qx lepton=true "${f}" && echo "${f##*/container-}" ;;
+                *STEAM_COMPAT_DATA_PATH*) echo "${f##*/container-} $(sed -n 's/^STEAM_COMPAT_DATA_PATH=//p' "${f}")" ;;
+            esac
+        done
+        exit 0
+        ;;
     *) exit 99 ;;
 esac
 STUB
@@ -85,6 +99,71 @@ for container in lepton-microemu-play lepton-headless-microemu-play; do
     run
     [[ "${rc}" == 1 ]] && grep -q "container ${container} exists" "${STATE}/out" || fail "${container} present: exit ${rc}"
     [[ -d "${MICROEMU_PLAY_CONTEXT}" ]] || fail "${container} present: context removed"
+done
+
+export MICROEMU_PLAY_NAME=probe-lh-copy
+reset inactive
+printf 'lepton=true\nSTEAM_COMPAT_DATA_PATH=%s\n' "${MICROEMU_PLAY_CONTEXT}" > "${STATE}/container-lepton-microemu-play"
+run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-reset: ${MICROEMU_PLAY_CONTEXT} is not a probe-lh-copy context, refusing" "${STATE}/out" \
+    || fail "named on the microemu-play context: exit ${rc}: $(cat "${STATE}/out")"
+[[ -d "${MICROEMU_PLAY_CONTEXT}" && -d "${MICROEMU_ANDROID_DATA}/sideload" && ! -s "${STATE}/calls" ]] \
+    || fail "named on the microemu-play context: something removed or podman called"
+real="${MICROEMU_PLAY_CONTEXT}"
+export MICROEMU_PLAY_CONTEXT="${T}/contexts/probe-lh-copy"
+reset inactive
+mkdir -p "${real}/keep"
+printf 'lepton=true\nSTEAM_COMPAT_DATA_PATH=%s\n' "${real}" > "${STATE}/container-lepton-microemu-play"
+run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-reset: Lepton containers exist (lepton-microemu-play), ${MICROEMU_ANDROID_DATA}/sideload, ${MICROEMU_ANDROID_DATA}/prune and ${MICROEMU_GAPPS} are shared, refusing" "${STATE}/out" \
+    || fail "named with the microemu-play container: exit ${rc}: $(cat "${STATE}/out")"
+[[ -d "${MICROEMU_PLAY_CONTEXT}" && -d "${real}/keep" && -d "${MICROEMU_ANDROID_DATA}/sideload" ]] \
+    || fail "named with the microemu-play container: something removed"
+reset inactive
+mkdir -p "${real}/keep"
+run
+[[ "${rc}" == 0 && ! -e "${MICROEMU_PLAY_CONTEXT}" && -d "${real}/keep" ]] || fail "named: exit ${rc}, not only its own context removed: $(cat "${STATE}/out")"
+reset inactive
+rm -rf "${T:?}/home"
+mkdir -p "${T}/home/.local/share/lepton/contexts/probe-lh-copy" "${T}/home/.local/share/lepton/contexts/microemu-play"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT HOME="${T}/home" "${reset_cmd}" > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 && ! -e "${T}/home/.local/share/lepton/contexts/probe-lh-copy" && -d "${T}/home/.local/share/lepton/contexts/microemu-play" ]] \
+    || fail "named, default context: exit ${rc}: $(ls "${T}/home/.local/share/lepton/contexts"): $(cat "${STATE}/out")"
+for container in lepton-probe-lh-copy lepton-headless-probe-lh-copy; do
+    reset inactive
+    : > "${STATE}/container-${container}"
+    run
+    [[ "${rc}" == 1 ]] && grep -q "container ${container} exists" "${STATE}/out" || fail "named ${container} present: exit ${rc}"
+    [[ -d "${MICROEMU_PLAY_CONTEXT}" ]] || fail "named ${container} present: context removed"
+done
+reset inactive
+MICROEMU_PLAY_NAME=Bad run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-reset: bad MICROEMU_PLAY_NAME Bad" "${STATE}/out" || fail "bad name: exit ${rc}"
+[[ -d "${MICROEMU_PLAY_CONTEXT}" && ! -s "${STATE}/calls" ]] || fail "bad name: context removed or podman called"
+unset MICROEMU_PLAY_NAME
+export MICROEMU_PLAY_CONTEXT="${real}"
+
+for spelling in "${MICROEMU_PLAY_CONTEXT}" "${T}/contexts//microemu-play/"; do
+    reset inactive
+    printf 'STEAM_COMPAT_DATA_PATH=%s\n' "${spelling}" > "${STATE}/container-lepton-other"
+    run
+    [[ "${rc}" == 1 ]] && grep -qx "microemu-play-reset: container lepton-other uses ${MICROEMU_PLAY_CONTEXT}, refusing" "${STATE}/out" \
+        || fail "another container on the context (${spelling}): exit ${rc}: $(cat "${STATE}/out")"
+    [[ -d "${MICROEMU_PLAY_CONTEXT}" ]] || fail "another container on the context (${spelling}): context removed"
+done
+reset inactive
+echo lepton=true > "${STATE}/container-lepton-steamlaunch-1"
+run
+[[ "${rc}" == 1 ]] && grep -q "microemu-play-reset: Lepton containers exist (lepton-steamlaunch-1)" "${STATE}/out" \
+    || fail "another Lepton container: exit ${rc}: $(cat "${STATE}/out")"
+[[ -d "${MICROEMU_PLAY_CONTEXT}" && -d "${MICROEMU_ANDROID_DATA}/sideload" ]] || fail "another Lepton container: something removed"
+for which in users leptons; do
+    reset inactive
+    echo "${which}" > "${STATE}/ps_fail"
+    run
+    [[ "${rc}" == 1 ]] && grep -qx "microemu-play-reset: podman ps failed, refusing" "${STATE}/out" || fail "podman ps error (${which}): exit ${rc}"
+    [[ -d "${MICROEMU_PLAY_CONTEXT}" && -d "${MICROEMU_ANDROID_DATA}/sideload" ]] || fail "podman ps error (${which}): something removed"
 done
 
 reset inactive

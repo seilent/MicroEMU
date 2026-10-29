@@ -4,7 +4,6 @@ set -uo pipefail
 LEPTON="${MICROEMU_LEPTON:-/usr/share/steam/compatibilitytools.d/lepton-armada/lepton}"
 LEPTON_DIR_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton-dir}"
 PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
 RUN="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/lepton"
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
 EXTEND_USEC="${MICROEMU_PLAY_EXTEND_USEC:-120000000}"
@@ -16,10 +15,14 @@ DISPLAY_FILE="${MICROEMU_DISPLAY_FILE:-/usr/share/microemu/android/display}"
 OPTS="${MICROEMU_ANDROID_OPTS:-/usr/share/microemu/android/opts}"
 OPTS_TIMEOUT_S="${MICROEMU_ANDROID_OPTS_TIMEOUT_S:-30}"
 GMS_GRANTS="android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION android.permission.ACCESS_BACKGROUND_LOCATION android.permission.READ_CONTACTS android.permission.WRITE_CONTACTS"
-NAME=microemu-play
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-play-run: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
+[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-play-run: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
+NAME=${PLAY_NAME}
 case "${1:-}" in
     "") ;;
-    --headless) NAME=headless-microemu-play ;;
+    --headless) NAME=headless-${PLAY_NAME} ;;
     *) echo "usage: microemu-play-run [--headless]" >&2; exit 1 ;;
 esac
 CONTAINER="lepton-${NAME}"
@@ -194,8 +197,8 @@ stop_steam_pipe() {
 }
 
 rm -f "${RUN%/*}/play-start-failed"
-other=lepton-headless-microemu-play
-[[ "${NAME}" == headless-* ]] && other=lepton-microemu-play
+other=lepton-headless-${PLAY_NAME}
+[[ "${NAME}" == headless-* ]] && other=lepton-${PLAY_NAME}
 rc=0
 podman container exists "${other}" 2>/dev/null || rc=$?
 case "${rc}" in

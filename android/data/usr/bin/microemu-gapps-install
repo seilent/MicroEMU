@@ -1,6 +1,8 @@
 #!/usr/bin/bash
 set -uo pipefail
 
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-gapps-install: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 CACHE="${MICROEMU_GAPPS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/gapps}"
 ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
@@ -105,7 +107,7 @@ for unit in microemu-play.service microemu-play-update.service; do
         *) fail "${unit} is running, refusing" ;;
     esac
 done
-for container in lepton-microemu-play lepton-headless-microemu-play; do
+for container in "lepton-${PLAY_NAME}" "lepton-headless-${PLAY_NAME}"; do
     rc=0
     podman container exists "${container}" 2>/dev/null || rc=$?
     case "${rc}" in
@@ -114,6 +116,8 @@ for container in lepton-microemu-play lepton-headless-microemu-play; do
         *) fail "podman container exists failed (rc=${rc}), refusing" ;;
     esac
 done
+leptons=$(podman ps -a --filter label=lepton=true --format '{{.Names}}') || fail "podman ps failed, refusing"
+[[ -z "${leptons}" ]] || fail "Lepton containers exist (${leptons//$'\n'/ }), ${GAPPS} is shared, refusing"
 
 mkdir -p "${GAPPS}" "${CACHE}"
 if complete; then

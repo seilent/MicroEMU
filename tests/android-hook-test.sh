@@ -165,6 +165,18 @@ start=$(date +%s%3N)
 took=$(( $(date +%s%3N) - start ))
 (( took >= 900 && took < 1800 )) || fail "com.android with only launcher3's stop: took ${took} ms, expected the full 1 s"
 
+reset_case active
+echo com.uberspot.a2048 > "${MICROEMU_RUNTIME_DIR}/play-pkg"
+MICROEMU_PLAY_NAME=probe-lh-copy "${hook}"
+grep -qxF "podman exec lepton-probe-lh-copy /system/bin/am force-stop com.uberspot.a2048" "${STATE}/calls" \
+    || fail "named: force-stop not in its container: $(cat "${STATE}/calls")"
+grep '^podman' "${STATE}/calls" | grep -q microemu-play && fail "named: a microemu-play container touched: $(cat "${STATE}/calls")"
+reset_case active
+rc=0
+MICROEMU_PLAY_NAME=Bad "${hook}" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 1 ]] && grep -qx "50-android: bad MICROEMU_PLAY_NAME Bad" "${STATE}/stderr" || fail "bad name: exit ${rc}"
+[[ ! -s "${STATE}/calls" ]] || fail "bad name: $(cat "${STATE}/calls")"
+
 if (( failures )); then
     echo "android-hook-test: ${failures} failure(s)" >&2
     exit 1

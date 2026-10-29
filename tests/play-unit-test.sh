@@ -63,7 +63,8 @@ cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
 echo "podman $*" >> "${STATE}/podman"
 args="$*"
-case "${args//lepton-headless-microemu-play/lepton-microemu-play}" in
+args=${args//lepton-headless-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-microemu-play}
+case "${args//lepton-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-microemu-play}" in
     "container inspect -f {{.State.Running}} lepton-microemu-play") cat "${STATE}/running" ;;
     "exec lepton-microemu-play /system/bin/getprop sys.boot_completed") cat "${STATE}/booted" ;;
     "exec lepton-microemu-play /system/bin/pidof logd") echo 123 ;;
@@ -293,6 +294,63 @@ echo 125 > "${STATE}/other_rc"
 run
 [[ "${rc}" == 1 ]] && grep -q "podman container exists failed (rc=125), refusing" "${STATE}/stderr" || fail "podman error: exit ${rc}"
 
+export MICROEMU_PLAY_NAME=probe-lh-copy
+reset "Boot complete!;exit 0"
+run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-run: ${MICROEMU_PLAY_CONTEXT} is not a probe-lh-copy context, refusing" "${STATE}/stderr" \
+    || fail "named on the microemu-play context: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ ! -s "${STATE}/podman" && ! -s "${STATE}/events" ]] || fail "named on the microemu-play context: podman or lepton ran"
+reset "Boot complete!;sleep 0.3;exit 0"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT HOME="${T}/home" "${run_script}" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] && grep -qx "STEAM_COMPAT_DATA_PATH=${T}/home/.local/share/lepton/contexts/probe-lh-copy" "${STATE}/env" \
+    && [[ -d "${T}/home/.local/share/lepton/contexts/probe-lh-copy/internal" && ! -e "${T}/home/.local/share/lepton/contexts/microemu-play" ]] \
+    || fail "named, default context: exit ${rc}: $(grep STEAM_COMPAT_DATA_PATH "${STATE}/env"): $(cat "${STATE}/stderr")"
+rm -rf "${T:?}/home"
+export MICROEMU_PLAY_CONTEXT="${T}/contexts/probe-lh-copy"
+reset "Boot complete!;sleep 0.3;exit 0"
+run
+[[ "${rc}" == 0 ]] || fail "named: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "lepton start probe-lh-copy" "${STATE}/events" || fail "named: lepton not run as start probe-lh-copy: $(events)"
+grep -qx "STEAM_COMPAT_DATA_PATH=${MICROEMU_PLAY_CONTEXT}" "${STATE}/env" || fail "named: not on its context"
+grep -q "^podman exec lepton-probe-lh-copy /system/bin/getprop sys.boot_completed" "${STATE}/podman" \
+    || fail "named: boot not checked on its container: $(cat "${STATE}/podman")"
+grep -qx "podman container exists lepton-headless-probe-lh-copy" "${STATE}/podman" || fail "named: headless container not checked"
+grep -q "microemu-play" "${STATE}/podman" && fail "named: a microemu-play container touched: $(cat "${STATE}/podman")"
+reset "Boot complete!;sleep 0.3;exit 0"
+rc=0
+headless || rc=$?
+[[ "${rc}" == 0 ]] && grep -qx "lepton start headless-probe-lh-copy" "${STATE}/events" || fail "named headless: exit ${rc}: $(events)"
+grep -qx "podman container exists lepton-probe-lh-copy" "${STATE}/podman" || fail "named headless: game container not checked"
+grep -q "microemu-play" "${STATE}/podman" && fail "named headless: a microemu-play container touched: $(cat "${STATE}/podman")"
+reset "Boot complete!;exit 0"
+echo lepton-headless-probe-lh-copy > "${STATE}/other"
+run
+[[ "${rc}" == 1 ]] && grep -q "container lepton-headless-probe-lh-copy exists, refusing" "${STATE}/stderr" \
+    || fail "named: headless container present: exit ${rc}"
+reset "exit 0"
+"${stop_script}"
+[[ "$(cat "${STATE}/podman")" == "podman stop -t 1 lepton-probe-lh-copy" ]] || fail "named stop: $(cat "${STATE}/podman")"
+reset "exit 0"
+: > "${STATE}/prefix"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ "$(sed 's/^podman //' "${STATE}/podman")" == $'inspect -f {{ index .Config.Labels "PREFIX" }} lepton-probe-lh-copy\nstop -t 1 lepton-probe-lh-copy\nrm -fi lepton-probe-lh-copy\nsync' ]] \
+    || fail "named post: $(cat "${STATE}/podman")"
+reset "exit 0"
+: > "${STATE}/prefix"
+"${stop_script}" --post --headless 2> "${STATE}/stderr"
+grep -qx "podman rm -fi lepton-headless-probe-lh-copy" "${STATE}/podman" || fail "named post headless: $(cat "${STATE}/podman")"
+reset "Boot complete!;exit 0"
+for script in "${run_script}" "${stop_script}"; do
+    rc=0
+    MICROEMU_PLAY_NAME=Bad "${script}" 2> "${STATE}/stderr" || rc=$?
+    [[ "${rc}" == 1 ]] && grep -q "bad MICROEMU_PLAY_NAME Bad" "${STATE}/stderr" || fail "bad name: ${script##*/} exit ${rc}"
+done
+[[ ! -s "${STATE}/podman" && ! -s "${STATE}/events" ]] || fail "bad name: podman or lepton ran: $(cat "${STATE}/podman" "${STATE}/events")"
+unset MICROEMU_PLAY_NAME
+rm -rf "${MICROEMU_PLAY_CONTEXT:?}"
+export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
+
 reset "Boot complete!;exit 0"
 run
 grep -q EXTEND_TIMEOUT_USEC "${STATE}/events" && fail "same stamp extended the timeout"
@@ -508,7 +566,8 @@ rc=0
 
 unit="${repo}/android/data/usr/lib/systemd/user/microemu-play.service"
 for line in BindsTo=gamescope-session-plus@microemu.service Type=notify NotifyAccess=all \
-    'ExecStartPre=/usr/bin/podman rm -fi lepton-microemu-play' ExecStart=/usr/libexec/microemu/microemu-play-run \
+    Environment=MICROEMU_PLAY_NAME=microemu-play 'ExecStartPre=/usr/bin/podman rm -fi lepton-${MICROEMU_PLAY_NAME}' \
+    ExecStart=/usr/libexec/microemu/microemu-play-run \
     ExecStop=/usr/libexec/microemu/microemu-play-stop 'ExecStopPost=/usr/libexec/microemu/microemu-play-stop --post' \
     TimeoutStartSec=60 TimeoutStopSec=10 SuccessExitStatus=137; do
     grep -qxF "${line}" "${unit}" || fail "unit lacks ${line}"
@@ -516,7 +575,8 @@ done
 grep -q '^After=' "${unit}" && fail "unit is ordered after something"
 
 unit="${repo}/android/data/usr/lib/systemd/user/microemu-play-update.service"
-for line in Type=oneshot KillMode=mixed 'ExecStartPre=/usr/bin/podman rm -fi lepton-headless-microemu-play' \
+for line in Type=oneshot KillMode=mixed Environment=MICROEMU_PLAY_NAME=microemu-play \
+    'ExecStartPre=/usr/bin/podman rm -fi lepton-headless-${MICROEMU_PLAY_NAME}' \
     'ExecStart=/usr/bin/microemu-play-update --body' 'ExecStopPost=/usr/libexec/microemu/microemu-play-stop --post --headless' \
     TimeoutStartSec=31min TimeoutStopSec=10 SyslogIdentifier=microemu-play-update; do
     grep -qxF "${line}" "${unit}" || fail "update unit lacks ${line}"

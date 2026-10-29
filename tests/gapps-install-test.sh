@@ -94,7 +94,9 @@ esac
 STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
+echo "podman $*" >> "${STATE}/podman"
 case "$*" in
+    "ps -a --filter label=lepton=true --format {{.Names}}") [[ ! -e "${STATE}/ps_fail" ]] || exit 125; cat "${STATE}/leptons" 2>/dev/null; exit 0 ;;
     *headless*) exit "$(cat "${STATE}/headless_rc")" ;;
     *) exit "$(cat "${STATE}/exists_rc")" ;;
 esac
@@ -211,6 +213,26 @@ echo 0 > "${STATE}/headless_rc"
 run
 [[ "${rc}" == 1 ]] && grep -q "container lepton-headless-microemu-play exists, refusing" "${STATE}/out" || fail "headless container present: exit ${rc}"
 [[ ! -s "${STATE}/update" ]] || fail "update run with the headless container present"
+reset
+echo 0 > "${STATE}/headless_rc"
+MICROEMU_PLAY_NAME=probe-lh-copy run
+[[ "${rc}" == 1 ]] && grep -q "container lepton-headless-probe-lh-copy exists, refusing" "${STATE}/out" || fail "named headless present: exit ${rc}"
+grep -qx "podman container exists lepton-probe-lh-copy" "${STATE}/podman" || fail "named: game container not checked: $(cat "${STATE}/podman")"
+reset
+MICROEMU_PLAY_NAME=Bad run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-gapps-install: bad MICROEMU_PLAY_NAME Bad" "${STATE}/out" || fail "bad name: exit ${rc}"
+[[ ! -s "${STATE}/podman" && ! -s "${STATE}/curl" ]] || fail "bad name: podman or curl ran"
+reset
+printf '%s\n' lepton-microemu-play lepton-steamlaunch-1 > "${STATE}/leptons"
+MICROEMU_PLAY_NAME=probe-lh-copy run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-gapps-install: Lepton containers exist (lepton-microemu-play lepton-steamlaunch-1), ${MICROEMU_GAPPS} is shared, refusing" "${STATE}/out" \
+    || fail "another Lepton container: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -s "${STATE}/curl" && ! -s "${STATE}/update" && ! -e "${MICROEMU_GAPPS}" ]] || fail "another Lepton container: the layer was touched"
+reset
+: > "${STATE}/ps_fail"
+run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-gapps-install: podman ps failed, refusing" "${STATE}/out" || fail "podman ps error: exit ${rc}"
+[[ ! -s "${STATE}/curl" ]] || fail "podman ps error: downloaded"
 
 reset
 echo 1 > "${STATE}/update_rc"

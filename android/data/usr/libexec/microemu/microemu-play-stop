@@ -1,13 +1,15 @@
 #!/usr/bin/bash
 set -u
 
-CONTAINER=lepton-microemu-play
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-play-stop: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
+CONTAINER="lepton-${PLAY_NAME}"
 HEADLESS=
 verb=${1:-}
 case "${2:-}" in
     "") ;;
     --headless)
-        CONTAINER=lepton-headless-microemu-play
+        CONTAINER="lepton-headless-${PLAY_NAME}"
         HEADLESS="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/headless"
         ;;
     *) verb=bad ;;

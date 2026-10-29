@@ -2,11 +2,14 @@
 set -uo pipefail
 
 LEPTON_DIR_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton-dir}"
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-sideload: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
+[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-sideload: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
 CACHE="${MICROEMU_ANDROID_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/android}"
 ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
-CONTAINER=lepton-microemu-play
+CONTAINER=lepton-${PLAY_NAME}
 STATES="${DATA}/sideload"
 QUEUE="${DATA}/prune"
 PACKAGES_XML="${CONTEXT}/baked/data_overlay/system/packages.xml"

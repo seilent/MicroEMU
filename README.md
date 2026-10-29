@@ -336,6 +336,14 @@ runs `microemu-play-run`, which writes `$XDG_RUNTIME_DIR/microemu/lepton/contain
 | odm build.prop | Lepton's own (`images/rootfs/vendor/odm/etc/build.prop`) plus `ro.sf.lcd_density` from `/usr/share/microemu/android/display` (`density=213`: a portrait app's 426 px column is 320 dp), `qemu.hw.mainkeys=1` (no navigation bar, B is Back), `debug.mesa.tu.debug=noubwc` (Turnip's UBWC off), `pm.dexopt.install=speed` (installs and updates compile with `speed`) and `ro.adb.secure=1` (adbd takes only the keys in `/data/misc/adb/adb_keys`; the Lepton view writes them from `~/.config/microemu/adb_keys`; `lepton-armada` writes none, so through it every adb client is `unauthorized` and gets no dialog) |
 | environment | `TERM=dumb`, `APP_WANTS_FLATSCREEN=true`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`, `STEAM_COMPAT_DATA_PATH` the context (shared storage kept in `external/`), `LEPTON_NO_CLEANUP=true`, `LEPTON_KEEP_CONTEXT=1`, no `SteamAppId` or `LD_LIBRARY_PATH`; `internal/` created first |
 
+`MICROEMU_PLAY_NAME` (`microemu-play`, set in both units) is the context name Lepton starts, its dir
+`~/.local/share/lepton/contexts/<name>`, and the containers `lepton-<name>` and `lepton-headless-<name>`, in
+`microemu-play-run`, `microemu-play-stop`, the units' `podman rm`, `microemu-play-update`, `microemu-play-reset`,
+`microemu-gapps-install`, `microemu-apk`, `microemu-sideload`, `microemu-apk-watch`, `microemu-android-sync` and the
+`50-android` hook. A name outside `[a-z0-9][a-z0-9-]*`, or a `MICROEMU_PLAY_CONTEXT` whose last component is not the
+name, exits 1. The units set their own value, so another name through a unit needs a drop-in. The sideload state, the
+Google Play layer and the `.play` entries are the same for every name.
+
 Lepton's output before the boot goes to the journal, after it to `~/.local/share/microemu/android/lepton.log`. A
 `logcat -b main -b system -b crash` stream from the moment `logd` runs goes to `boot.log`, emptied at each start.
 While no `steam` process runs, a reader on `~/.steam/steam.pipe` logs each line Android writes there (`android asked to
@@ -388,8 +396,9 @@ Sideloads (`microemu-sideload install`), with per package state in `~/.local/sha
   keeps a failed uninstall queued with its state.
 
 `microemu-play-reset` removes the context and the sideload state (refused while `microemu-play.service` or
-`microemu-play-update.service` runs, `lepton-microemu-play` or `lepton-headless-microemu-play` exists, or `podman container
-exists` fails); the next
+`microemu-play-update.service` runs, `lepton-microemu-play` or `lepton-headless-microemu-play` exists, any container
+carries the context as its `STEAM_COMPAT_DATA_PATH` label, any `label=lepton=true` container exists, or podman fails);
+the next
 launch boots a fresh context and installs every `.apk` again. Play games are gone with the context, so the sync after
 that launch deletes their `.play` entries.
 
@@ -455,8 +464,8 @@ container is kept.
 Optional, and off until `microemu-gapps-install` runs. Google's APKs are not part of microemu: that command downloads them
 on the device.
 
-`microemu-gapps-install` (refused while `microemu-play.service` or `microemu-play-update.service` runs, or either container
-exists):
+`microemu-gapps-install` (refused while `microemu-play.service` or `microemu-play-update.service` runs, either container
+exists, or any `label=lepton=true` container exists):
 
 1. Downloads MindTheGapps 11.0.0 arm64 `20230922_081122` and 14.0.0 arm64 `20250203_200051` from GitHub with `curl
    --proto =https --proto-redir =https` into `~/.cache/microemu/gapps/`, checked by size and sha256.
@@ -518,7 +527,8 @@ when it changes. Sign in works once the ID is registered.
 Play updates itself and GMS from a job that runs 10 min after boot, with or without an account. Updates run by hand: `microemu-play-update`, or `Update Google Play` in ES-DE's Android Games.
 
 `microemu-play-update [--no-block] [--clear-play] [--setup]` refuses (journal line, exit 1) while `microemu-play.service`
-runs, while `lepton-microemu-play` exists, with the layer off, or with `microemu-play-update.service already running`
+runs, while `lepton-microemu-play` exists or a container other than `lepton-headless-microemu-play` carries the context
+as its `STEAM_COMPAT_DATA_PATH` label, with the layer off, or with `microemu-play-update.service already running`
 (active or activating; no option is recorded then). Otherwise it starts `microemu-play-update.service` and
 follows its journal; `--no-block` (the ES-DE entry) starts it and returns. The unit (`Type=oneshot`, `KillMode=mixed`,
 `TimeoutStartSec=31min`, `Conflicts=` and `Before=microemu-play.service`, `SyslogIdentifier=microemu-play-update`, no

@@ -1,10 +1,13 @@
 #!/usr/bin/bash
 set -u
 
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-play-update: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
 UNIT=microemu-play-update.service
-CONTAINER=lepton-headless-microemu-play
+CONTAINER=lepton-headless-${PLAY_NAME}
 PLAY_RUN="${MICROEMU_PLAY_RUN:-/usr/libexec/microemu/microemu-play-run}"
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
+[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-play-update: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 PACKAGES="${CONTEXT}/baked/data_overlay/system/packages.xml"
 CLEAR="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/play-update-clear"
@@ -392,12 +395,19 @@ case "$(systemctl --user show -P ActiveState microemu-play.service 2>/dev/null)"
     *) say "microemu-play.service is running, refusing"; exit 1 ;;
 esac
 rc=0
-podman container exists lepton-microemu-play 2>/dev/null || rc=$?
+podman container exists "lepton-${PLAY_NAME}" 2>/dev/null || rc=$?
 case "${rc}" in
     1) ;;
-    0) say "container lepton-microemu-play exists, refusing"; exit 1 ;;
+    0) say "container lepton-${PLAY_NAME} exists, refusing"; exit 1 ;;
     *) say "podman container exists failed (rc=${rc}), refusing"; exit 1 ;;
 esac
+users=$(podman ps -a --format '{{.Names}} {{.Label "STEAM_COMPAT_DATA_PATH"}}') || { say "podman ps failed, refusing"; exit 1; }
+while read -r container path; do
+    if [[ "${container}" != "${CONTAINER}" && -n "${path}" && "$(readlink -m "${path}")" == "$(readlink -m "${CONTEXT}")" ]]; then
+        say "container ${container} uses ${CONTEXT}, refusing"
+        exit 1
+    fi
+done <<< "${users}"
 [[ -e "${GAPPS}/current" ]] || { say "the Google Play layer is off, run microemu-gapps-install"; exit 1; }
 case "$(systemctl --user show -P ActiveState "${UNIT}" 2>/dev/null)" in
     active|activating) say "${UNIT} already running"; exit 1 ;;

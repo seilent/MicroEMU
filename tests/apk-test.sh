@@ -86,7 +86,9 @@ STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
 echo "podman $*" >> "${STATE}/calls"
-case "$*" in
+args="$*"
+args=${args//lepton-headless-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-headless-microemu-play}
+case "${args//lepton-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-microemu-play}" in
     "container exists lepton-headless-microemu-play") [[ -e "${STATE}/stray" ]] ;;
     "rm -f lepton-headless-microemu-play") ;;
     *"resolve-activity --brief -c android.intent.category.LAUNCHER com.uberspot.a2048") cat "${STATE}/resolve" ;;
@@ -577,6 +579,37 @@ reset
 : > "${STATE}/dead"
 watch_run
 logged "com.uberspot.a2048 eof, ending the game"
+
+case_name="named"
+export MICROEMU_PLAY_NAME=probe-lh-copy
+reset
+: > "${STATE}/stray"
+outer "${rom}"
+[[ "${rc}" == 0 ]] || fail "${case_name}: outer exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "podman container exists lepton-headless-probe-lh-copy" "${STATE}/calls" || fail "${case_name}: no headless check: $(calls)"
+grep -qx "podman rm -f lepton-headless-probe-lh-copy" "${STATE}/calls" || fail "${case_name}: stray not removed: $(calls)"
+logged "removed a leftover lepton-headless-probe-lh-copy"
+reset
+body
+[[ "${rc}" == 0 ]] || fail "${case_name}: body exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qxF "podman exec lepton-probe-lh-copy /system/bin/am start -n com.uberspot.a2048/.MainActivity" "${STATE}/calls" \
+    || fail "${case_name}: not started in its container: $(calls)"
+grep '^podman' "${STATE}/calls" | grep -q microemu-play && fail "${case_name}: body touched a microemu-play container: $(calls)"
+reset
+printf '%s\n' "${resume_launcher}" "sleep 5" > "${STATE}/logcat"
+watch_run
+grep -qxF "podman exec lepton-probe-lh-copy /system/bin/am force-stop com.uberspot.a2048" "${STATE}/calls" \
+    || fail "${case_name}: watch force-stop not in its container: $(calls)"
+grep '^podman' "${STATE}/calls" | grep -q microemu-play && fail "${case_name}: a microemu-play container touched: $(calls)"
+reset
+MICROEMU_PLAY_NAME=Bad outer "${rom}"
+[[ "${rc}" == 1 ]] && grep -qx "microemu-apk: bad MICROEMU_PLAY_NAME Bad" "${STATE}/stderr" || fail "${case_name}: bad name exit ${rc}"
+[[ ! -s "${STATE}/calls" ]] || fail "${case_name}: bad name: $(calls)"
+reset
+MICROEMU_PLAY_NAME=Bad watch_run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-apk-watch: bad MICROEMU_PLAY_NAME Bad" "${STATE}/stderr" || fail "${case_name}: watch bad name exit ${rc}"
+[[ ! -s "${STATE}/calls" ]] || fail "${case_name}: watch bad name: $(calls)"
+unset MICROEMU_PLAY_NAME
 
 if (( failures )); then
     echo "apk-test: ${failures} failure(s)" >&2

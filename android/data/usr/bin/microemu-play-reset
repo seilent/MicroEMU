@@ -1,7 +1,10 @@
 #!/usr/bin/bash
 set -u
 
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/microemu-play}"
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-play-reset: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
+[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-play-reset: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
@@ -21,7 +24,7 @@ for unit in microemu-play.service microemu-play-update.service; do
         *) fail "${unit} is running, refusing" ;;
     esac
 done
-for container in lepton-microemu-play lepton-headless-microemu-play; do
+for container in "lepton-${PLAY_NAME}" "lepton-headless-${PLAY_NAME}"; do
     rc=0
     podman container exists "${container}" 2>/dev/null || rc=$?
     case "${rc}" in
@@ -30,6 +33,14 @@ for container in lepton-microemu-play lepton-headless-microemu-play; do
         *) fail "podman container exists failed (rc=${rc}), refusing" ;;
     esac
 done
+users=$(podman ps -a --format '{{.Names}} {{.Label "STEAM_COMPAT_DATA_PATH"}}') || fail "podman ps failed, refusing"
+while read -r container path; do
+    if [[ -n "${path}" && "$(readlink -m "${path}")" == "$(readlink -m "${CONTEXT}")" ]]; then
+        fail "container ${container} uses ${CONTEXT}, refusing"
+    fi
+done <<< "${users}"
+leptons=$(podman ps -a --filter label=lepton=true --format '{{.Names}}') || fail "podman ps failed, refusing"
+[[ -z "${leptons}" ]] || fail "Lepton containers exist (${leptons//$'\n'/ }), ${DATA}/sideload, ${DATA}/prune and ${GAPPS} are shared, refusing"
 
 if [[ -d "${CONTEXT}" ]]; then
     podman unshare chmod -R 700 "${CONTEXT}" || fail "cannot chmod ${CONTEXT}"

@@ -91,7 +91,9 @@ STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
 echo "podman $*" >> "${STATE}/calls"
-case "$*" in
+args="$*"
+args=${args//lepton-headless-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-headless-microemu-play}
+case "${args//lepton-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-microemu-play}" in
     "container exists lepton-microemu-play") exit "$(cat "${STATE}/exists_rc")" ;;
     "container exists lepton-headless-microemu-play") [[ ! -e "${STATE}/no_container" ]] ;;
     "stop -t "*" lepton-headless-microemu-play") : > "${STATE}/stopped" ;;
@@ -110,6 +112,7 @@ case "$*" in
         sleep "$(cat "${STATE}/compile_sleep" 2>/dev/null || echo 0)"
         [[ -e "${STATE}/compile_fail" ]] && { echo "Failure: dex2oat"; exit 1; }
         echo Success ;;
+    "ps -a --format "*) [[ ! -e "${STATE}/ps_fail" ]] || exit 125; cat "${STATE}/users" 2>/dev/null; exit 0 ;;
     *) exit 99 ;;
 esac
 STUB
@@ -466,6 +469,58 @@ echo 0 > "${STATE}/exists_rc"
 run
 [[ "${rc}" == 1 ]] && grep -qx "container lepton-microemu-play exists, refusing" "${STATE}/log" || fail "${case_name}: exit ${rc}"
 grep -q "start" "${STATE}/calls" && fail "${case_name}: unit started"
+
+case_name="named"
+named="${T}/contexts/probe-lh-copy"
+reset ""
+echo 0 > "${STATE}/exists_rc"
+MICROEMU_PLAY_NAME=probe-lh-copy MICROEMU_PLAY_CONTEXT="${named}" run
+[[ "${rc}" == 1 ]] && grep -qx "container lepton-probe-lh-copy exists, refusing" "${STATE}/log" || fail "${case_name}: exit ${rc}"
+grep -qx "podman container exists lepton-probe-lh-copy" "${STATE}/calls" || fail "${case_name}: $(cat "${STATE}/calls")"
+reset "sleep 0.3;write 204516046 85343420;sleep 0.3;write 263737022 85343420"
+packages="${named}/baked/data_overlay/system/packages.xml" write_packages 204516046 83662520
+MICROEMU_PLAY_NAME=probe-lh-copy MICROEMU_PLAY_CONTEXT="${named}" body
+[[ "${rc}" == 0 ]] || fail "${case_name}: body exit ${rc}: $(cat "${STATE}/stderr")"
+called "podman exec lepton-headless-probe-lh-copy /system/bin/sync"
+called "podman stop -t 5 lepton-headless-probe-lh-copy"
+grep '^podman' "${STATE}/calls" | grep -q microemu-play && fail "${case_name}: a microemu-play container touched: $(cat "${STATE}/calls")"
+[[ -s "${named}/microemu-compiled" && ! -e "${MICROEMU_PLAY_CONTEXT}/microemu-compiled" ]] \
+    || fail "${case_name}: compile stamp not in its own context"
+rm -rf "${named:?}"
+reset ""
+MICROEMU_PLAY_NAME=probe-lh-copy run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-update: ${MICROEMU_PLAY_CONTEXT} is not a probe-lh-copy context, refusing" "${STATE}/stderr" \
+    || fail "${case_name}: on the microemu-play context: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ ! -s "${STATE}/calls" ]] || fail "${case_name}: on the microemu-play context: $(cat "${STATE}/calls")"
+reset ""
+echo "lepton-other ${T}/home/.local/share/lepton/contexts/probe-lh-copy" > "${STATE}/users"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT HOME="${T}/home" MICROEMU_PLAY_NAME=probe-lh-copy "${update}" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 1 ]] && grep -qx "container lepton-other uses ${T}/home/.local/share/lepton/contexts/probe-lh-copy, refusing" "${STATE}/log" \
+    || fail "${case_name}: default context: exit ${rc}: $(cat "${STATE}/log" "${STATE}/stderr")"
+reset ""
+MICROEMU_PLAY_NAME=Bad run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-update: bad MICROEMU_PLAY_NAME Bad" "${STATE}/stderr" || fail "${case_name}: bad name exit ${rc}"
+[[ ! -s "${STATE}/calls" ]] || fail "${case_name}: bad name: $(cat "${STATE}/calls")"
+
+case_name="refused, another container on the context"
+reset ""
+echo "lepton-other ${MICROEMU_PLAY_CONTEXT}" > "${STATE}/users"
+run
+[[ "${rc}" == 1 ]] && grep -qx "container lepton-other uses ${MICROEMU_PLAY_CONTEXT}, refusing" "${STATE}/log" || fail "${case_name}: exit ${rc}"
+grep -q "start" "${STATE}/calls" && fail "${case_name}: unit started"
+case_name="refused, podman ps error"
+reset ""
+: > "${STATE}/ps_fail"
+run
+[[ "${rc}" == 1 ]] && grep -qx "podman ps failed, refusing" "${STATE}/log" || fail "${case_name}: exit ${rc}"
+grep -q "start" "${STATE}/calls" && fail "${case_name}: unit started"
+case_name="its own headless container on the context"
+reset ""
+printf '%s\n' "lepton-headless-microemu-play ${MICROEMU_PLAY_CONTEXT}" "lepton-elsewhere ${T}/contexts/other" "lepton-unlabelled " \
+    > "${STATE}/users"
+run --no-block
+[[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/log")"
 
 case_name="refused, podman error"
 reset ""
