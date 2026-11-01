@@ -15,6 +15,7 @@ export STATE="${T}/state"
 export MICROEMU_LEPTON="${T}/bin/lepton"
 export MICROEMU_LEPTON_DIR_CMD="${T}/bin/lepton-dir"
 export MICROEMU_PAD_NODES="${T}/bin/pad-nodes"
+export MICROEMU_KEYBOARD_INSTALL="${T}/bin/keyboard-install"
 export MICROEMU_DISPLAY_FILE="${repo}/android/data/usr/share/microemu/android/display"
 export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
@@ -69,6 +70,11 @@ STUB
 cat > "${T}/bin/pad-nodes" <<'STUB'
 #!/usr/bin/bash
 cat "${STATE}/nodes"
+STUB
+cat > "${T}/bin/keyboard-install" <<'STUB'
+#!/usr/bin/bash
+echo "$*" >> "${STATE}/keyboard"
+[[ ! -e "${STATE}/keyboard-hold" ]] || sleep "$(cat "${STATE}/keyboard-hold")"
 STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
@@ -137,7 +143,8 @@ reset() {
     printf 'I ActivityManager: start\n' > "${STATE}/logcat"
     printf '/dev/input/event10\n/dev/input/event12\n' > "${STATE}/nodes"
     printf '%s\n' "$1" | tr ';' '\n' > "${STATE}/script"
-    rm -f "${MICROEMU_STEAM_PIPE}"
+    : > "${STATE}/keyboard"
+    rm -f "${MICROEMU_STEAM_PIPE}" "${STATE}/keyboard-hold"
     mkfifo "${MICROEMU_STEAM_PIPE}"
 }
 
@@ -181,6 +188,8 @@ grep -q "logcat after boot" "${STATE}/stderr" && fail "post boot output reached 
 [[ "$(wc -l < "${STATE}/runtime-cmd")" == 1 ]] || fail "microemu-lepton runtime ran $(wc -l < "${STATE}/runtime-cmd") times, not once"
 [[ "$(cat "${MICROEMU_ANDROID_DATA}/boot.log")" == "I ActivityManager: start" ]] || fail "boot log: $(cat "${MICROEMU_ANDROID_DATA}/boot.log" 2>/dev/null)"
 grep -q "lepton start exited with 3" "${STATE}/stderr" || fail "exit not logged"
+for _ in $(seq 1 40); do [[ -s "${STATE}/keyboard" ]] && break; sleep 0.05; done
+[[ "$(cat "${STATE}/keyboard")" == "lepton-microemu-play" ]] || fail "keyboard install not started as lepton-microemu-play: $(cat "${STATE}/keyboard" 2>/dev/null)"
 opts="${MICROEMU_PLAY_CONTEXT}/microemu-opts"
 script="${STATE}/opts-script-1"
 for line in "s 'wifi-scan' 'settings' 'put' 'global' 'wifi_scan_always_enabled' '0'" \
@@ -266,6 +275,7 @@ grep -qx "STEAM_COMPAT_DATA_PATH=${MICROEMU_PLAY_CONTEXT}" "${STATE}/env" || fai
 grep -q "lepton-headless-microemu-play /system/bin/getprop sys.boot_completed" "${STATE}/podman" || fail "headless: boot not checked on its container: $(cat "${STATE}/podman")"
 grep -v "container exists" "${STATE}/podman" | grep -q " lepton-microemu-play" && fail "headless: lepton-microemu-play touched: $(cat "${STATE}/podman")"
 grep -q "android ready" "${STATE}/stderr" || fail "headless: not ready"
+[[ ! -s "${STATE}/keyboard" ]] || fail "headless: the keyboard install started: $(cat "${STATE}/keyboard")"
 [[ "$(cat "${MICROEMU_PLAY_CONTEXT}/microemu-stamp")" == "3.0.5 3.0.3 gapps=none" ]] || fail "headless: stamp not written"
 grep -qx "podman container exists lepton-microemu-play" "${STATE}/podman" || fail "headless: game container not checked"
 rc=0
@@ -455,6 +465,14 @@ reset "Boot complete!;exit 0"
 run
 grep -q EXTEND_TIMEOUT_USEC "${STATE}/events" && fail "same stamp extended the timeout"
 grep -qx "notify --ready" "${STATE}/events" || fail "same stamp: no ready"
+
+reset "Boot complete!;sleep 0.5;exit 0"
+echo 5 > "${STATE}/keyboard-hold"
+start_ms=$(date +%s%3N)
+run
+(( $(date +%s%3N) - start_ms < 4000 )) || fail "the keyboard install delayed the launch"
+grep -q "android ready" "${STATE}/stderr" || fail "keyboard hold: not ready"
+grep -qx "lepton start microemu-play" "${STATE}/events" || fail "keyboard hold: lepton not started"
 
 reset "Boot complete!;exit 0"
 echo false > "${STATE}/running"

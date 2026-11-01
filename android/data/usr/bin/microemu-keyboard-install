@@ -1,0 +1,117 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+[[ "$#" == 1 ]] || { echo "usage: microemu-keyboard-install <container>" >&2; exit 1; }
+CONTAINER=$1
+FETCH="${MICROEMU_FETCH:-/usr/bin/microemu-fetch}"
+CACHE="${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/keyboard"
+PACKAGE=rkr.simplekeyboard.inputmethod
+COMPONENT=rkr.simplekeyboard.inputmethod/.latin.LatinIME
+VERSION=149
+URL=https://f-droid.org/repo/rkr.simplekeyboard.inputmethod_149.apk
+SIZE=666818
+SHA=a6224924010bd4f169d2317064ccd0c307b9560bc7d8f500551d179d4f94918a
+POLL_S="${MICROEMU_KEYBOARD_POLL_S:-1}"
+POLLS=15
+APK="${CACHE}/${URL##*/}"
+
+if [[ "${MICROEMU_TEST:-}" == 1 ]]; then
+    SIZE="${MICROEMU_KEYBOARD_SIZE:-${SIZE}}"
+    SHA="${MICROEMU_KEYBOARD_SHA:-${SHA}}"
+fi
+
+say() { printf 'microemu-keyboard-install: %s\n' "$*" >&2; }
+
+guest() { podman exec "${CONTAINER}" "$@"; }
+
+package_version() {
+    local line
+    while IFS= read -r line; do
+        [[ "${line}" == "package:${PACKAGE} versionCode:"* ]] || continue
+        printf '%s\n' "${line##*versionCode:}"
+        return 0
+    done <<< "$1"
+    return 1
+}
+
+wait_component() {
+    local i current=${available}
+    for (( i = 0; i < POLLS; i++ )); do
+        if [[ "${current}" == *"${COMPONENT}:"* ]]; then
+            return 0
+        fi
+        sleep "${POLL_S}"
+        current=$(guest /system/bin/ime list -a 2>/dev/null)
+    done
+}
+
+install_keyboard() {
+    local out rc=0 line
+    mkdir -p "${CACHE}"
+    out=$("${FETCH}" "${URL}" "${SIZE}" "${SHA}" "${APK}" 2>&1) || rc=$?
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] || say "${line#microemu-fetch: }"
+    done <<< "${out}"
+    if (( rc )); then
+        say "no keyboard download, the next start retries"
+        return 1
+    fi
+    out=$(podman exec -i "${CONTAINER}" /system/bin/cmd package install -r -S "${SIZE}" < "${APK}" 2>&1) || rc=$?
+    if (( rc )) || [[ "${out}" != *Success* ]]; then
+        say "install failed: ${out}"
+        return 1
+    fi
+    say "${PACKAGE} ${VERSION} installed"
+    available=$(guest /system/bin/ime list -a 2>/dev/null)
+}
+
+enable_and_set() {
+    local upgraded=$1
+    wait_component
+    if ! guest /system/bin/ime enable "${COMPONENT}" >/dev/null 2>&1; then
+        say "ime enable failed, the next start retries"
+        return 0
+    fi
+    say "${COMPONENT} enabled"
+    if (( upgraded )) && [[ -n "${default}" && "${default}" != null && "${default}" != "${COMPONENT}" ]]; then
+        say "ime set skipped, the default is ${default}"
+        return 0
+    fi
+    if ! guest /system/bin/ime set "${COMPONENT}" >/dev/null 2>&1; then
+        say "ime set failed, the next start retries"
+        return 0
+    fi
+    say "${COMPONENT} set"
+}
+
+versions=$(guest /system/bin/cmd package list packages --show-versioncode) || { say "package list failed, nothing this start"; exit 0; }
+enabled=$(guest /system/bin/ime list -s) || { say "ime list -s failed, nothing this start"; exit 0; }
+available=$(guest /system/bin/ime list -a) || { say "ime list -a failed, nothing this start"; exit 0; }
+default=$(guest /system/bin/settings get secure default_input_method) || { say "settings get failed, nothing this start"; exit 0; }
+
+installed=
+if parsed=$(package_version "${versions}"); then
+    installed=${parsed}
+fi
+if [[ -n "${installed}" && ! "${installed}" =~ ^[0-9]+$ ]]; then
+    say "unreadable versionCode ${installed}, nothing this start"
+    exit 0
+fi
+
+if [[ -z "${installed}" ]]; then
+    [[ -z "${enabled}" ]] || { say "an IME is already enabled (${enabled//$'\n'/ }), nothing this start"; exit 0; }
+    install_keyboard || exit 0
+    enable_and_set 0
+elif (( installed < VERSION )); then
+    say "${PACKAGE} ${installed} is older than ${VERSION}"
+    install_keyboard || exit 0
+    enable_and_set 1
+elif [[ -z "${enabled}" ]]; then
+    enable_and_set 0
+elif [[ "${enabled}" != "${COMPONENT}" ]]; then
+    say "another IME is enabled (${enabled//$'\n'/ }), nothing this start"
+elif [[ "${default}" == "${COMPONENT}" ]]; then
+    say "the keyboard is on"
+else
+    enable_and_set 0
+fi

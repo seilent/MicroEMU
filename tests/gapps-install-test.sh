@@ -18,6 +18,7 @@ export MICROEMU_GAPPS="${T}/gapps"
 export MICROEMU_GAPPS_CACHE="${T}/cache"
 export MICROEMU_ANDROID_ROMS="${T}/roms"
 export MICROEMU_PLAY_UPDATE="${T}/bin/update"
+export MICROEMU_FETCH="${repo}/android/data/usr/bin/microemu-fetch"
 set_dir="${MICROEMU_GAPPS}/mtg11-20230922.vending-36.6.25"
 
 echo gsf > "${T}/zip11/system/system_ext/priv-app/GoogleServicesFramework/GoogleServicesFramework.apk"

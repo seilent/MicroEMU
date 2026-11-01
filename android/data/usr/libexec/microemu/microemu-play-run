@@ -5,6 +5,7 @@ LEPTON="${MICROEMU_LEPTON:-/usr/libexec/microemu/microemu-lepton}"
 LEPTON_RUNTIME_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton}"
 CONTEXT_MOVE="${MICROEMU_CONTEXT_MOVE:-/usr/libexec/microemu/microemu-context-move}"
 PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
+KEYBOARD_INSTALL="${MICROEMU_KEYBOARD_INSTALL:-/usr/bin/microemu-keyboard-install}"
 RUN="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/lepton"
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
 STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}"
@@ -340,6 +341,7 @@ handle() {
         else
             printf '%s\n' "${stamp}" > "${CONTEXT}/microemu-stamp"
         fi
+        [[ "${NAME}" == headless-* ]] || "${KEYBOARD_INSTALL}" "${CONTAINER}" &
         stop_boot_log
         say "android ready"
     else

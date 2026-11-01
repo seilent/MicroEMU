@@ -7,6 +7,7 @@ GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 CACHE="${MICROEMU_GAPPS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/gapps}"
 ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
 UPDATE="${MICROEMU_PLAY_UPDATE:-/usr/bin/microemu-play-update}"
+FETCH="${MICROEMU_FETCH:-/usr/bin/microemu-fetch}"
 SET=mtg11-20230922.vending-36.6.25
 
 MTG11_URL=https://github.com/MindTheGapps/11.0.0-arm64/releases/download/MindTheGapps-11.0.0-arm64-20230922_081122/MindTheGapps-11.0.0-arm64-20230922_081122.zip
@@ -66,16 +67,9 @@ complete() {
 }
 
 fetch() {
-    local url=$1 size=$2 sha=$3 file=$4
-    if [[ "$(stat -c %s "${file}" 2>/dev/null)" == "${size}" ]] && echo "${sha}  ${file}" | sha256sum -c --status 2>/dev/null; then
-        return 0
-    fi
-    say "downloading ${url##*/}"
-    curl --proto =https --proto-redir =https -fL --retry 3 --connect-timeout 30 -o "${file}.part" "${url}" \
-        || { rm -f "${file}.part"; fail "download failed: ${url}"; }
-    [[ "$(stat -c %s "${file}.part")" == "${size}" ]] || { rm -f "${file}.part"; fail "${url##*/}: size differs from ${size}"; }
-    echo "${sha}  ${file}.part" | sha256sum -c --status || { rm -f "${file}.part"; fail "${url##*/}: sha256 mismatch"; }
-    mv "${file}.part" "${file}"
+    local url=$1 size=$2 sha=$3 file=$4 rc=0
+    "${FETCH}" "${url}" "${size}" "${sha}" "${file}" || rc=$?
+    (( ! rc )) || exit 1
 }
 
 member() {

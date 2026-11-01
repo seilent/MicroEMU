@@ -285,8 +285,9 @@ Android ones. `layout-test.sh` builds a stat shim with `cc`. `retroarch-run-test
 and PCSX ReARMed cores on generated ROMs per layout, and is skipped without them or `xorriso`.
 `osd-test.sh` renders the pill when `dist/` holds the theme fonts and `speaker.svg` (`just install` first;
 `MICROEMU_OSD_TEST_THEME` and `MICROEMU_OSD_TEST_SPEAKER` override). The test pin overrides of `shaders.sh`, `osd.sh`,
-`stub.sh` and `microemu-gapps-install`, and `microemu-client`'s `MICROEMU_TEST_FOLDERS` rows, apply only with
-`MICROEMU_TEST=1`.
+`stub.sh` and `microemu-gapps-install` (`MICROEMU_GAPPS_*`), and `microemu-client`'s `MICROEMU_TEST_FOLDERS` rows,
+apply only with `MICROEMU_TEST=1`; `microemu-keyboard-install` takes `MICROEMU_KEYBOARD_SIZE` and
+`MICROEMU_KEYBOARD_SHA` the same way.
 
 ## Android
 
@@ -343,17 +344,20 @@ child:
 `lepton-headless-<name>`, in
 `microemu-play-run`, `microemu-play-stop`, the units' `podman rm`, `microemu-play-update`, `microemu-play-reset`,
 `microemu-gapps-install`, `microemu-apk`, `microemu-sideload`, `microemu-apk-watch`, `microemu-android-sync` and the
-`50-android` hook. A name outside `[a-z0-9][a-z0-9-]*`, or a `MICROEMU_PLAY_CONTEXT` whose last component is not the
-name, exits 1. The units set their own value, so another name through a unit needs a drop-in. The sideload state, the
-Google Play layer and the `.play` entries are the same for every name.
+`50-android` hook. `microemu-keyboard-install` takes the container name as its argument instead, and `microemu-play-run`
+starts it with `lepton-<name>`. A name outside `[a-z0-9][a-z0-9-]*`, or a `MICROEMU_PLAY_CONTEXT` whose last component is
+not the name, exits 1. The units set their own value, so another name through a unit needs a drop-in. The sideload state,
+the Google Play layer and the `.play` entries are the same for every name.
 
 A context left at the old path `~/.local/share/lepton/contexts/<name>` is moved to the one above by
 `microemu-context-move`, which `microemu-play-run`, `microemu-sideload` (`prepare` and `install`, before anything writes
-under the context) and `microemu-play-reset` run first, while neither `lepton-<name>` nor `lepton-headless-<name>` exists
-(`podman container exists`). With both paths present it logs `both paths exist`, uses the new one and deletes neither, so
-an image rollback finds its context where it was. A link at the old path, a `podman container exists` that fails, or an
-old and a new parent on different filesystems refuse with the move to make by hand. `microemu-play-reset` removes the old
-path too, so the next start does not move a half removed context back.
+under the context) and `microemu-play-update` (before it reads `packages.xml`) run first, while neither `lepton-<name>` nor
+`lepton-headless-<name>` exists (`podman container exists`); it holds an exclusive lock, so two starts at once move it
+once. With both paths present it logs `both paths exist`, uses the new one and deletes neither, so an image rollback finds
+its context where it was; a link at the old path then counts as that present path, not as a refusal. A link at the old
+path with nothing at the new one, a `podman container exists` that fails, or an old and a new parent on different
+filesystems refuse with the move to make by hand. `microemu-play-reset` removes both paths itself, so the next start does
+not move a half removed context back.
 
 Lepton's output before the boot goes to the journal, after it to `~/.local/share/microemu/android/lepton.log`. A
 `logcat -b main -b system -b crash` stream from the moment `logd` runs goes to `boot.log`, emptied at each start.
@@ -395,14 +399,32 @@ effect on Android 11 and are left out: `sensor_privacy`, `send_security_reports`
 `master_sync_allow_background_in_battery_saver`, `job_scheduler_quota_controller_max_job_count_bg` and
 `dalvik.vm.dex2oat-filter`.
 
+Lepton's Android image ships no on screen keyboard, so a text field cannot be typed into without one. After the same
+ready point as the guest settings, `microemu-play-run` starts `microemu-keyboard-install <container>` in the background;
+it never waits for it, and its failures only reach the journal. Every start decides again from the guest: the version of
+`rkr.simplekeyboard.inputmethod` in `cmd package list packages --show-versioncode`, whether `ime list -s` names an IME,
+and `settings get secure default_input_method`. An absent package with no IME enabled, or one older than versionCode 149,
+is fetched and installed. A package at 149 or above with no IME enabled, or with only this one enabled while another IME
+is still the default, gets `ime enable` and `ime set` after `ime list -a` shows the component (up to 15 s). Anything else
+does nothing, so an IME of your own is left alone. A start whose probes fail leaves the guest untouched.
+
+The keyboard is Simple Keyboard 6.8, Apache-2.0, `https://f-droid.org/repo/rkr.simplekeyboard.inputmethod_149.apk`,
+666818 bytes, sha256 `a6224924010bd4f169d2317064ccd0c307b9560bc7d8f500551d179d4f94918a`, fetched by
+`microemu-fetch` (the helper `microemu-gapps-install` uses too) into `~/.cache/microemu/keyboard`, which is kept. The
+first Android start downloads it, so that start needs the network; later starts use the cache, and a failed or offline
+fetch retries at the next start. The APK streams on stdin to `/system/bin/cmd package install -r`, without the sideload
+state, the appops or a compile. Uninstalling the keyboard in the guest while no other IME is installed brings it back at
+the next start; install another IME and enable it to keep it away. An upgrade to a new pin turns the keyboard back on,
+even when it was off.
+
 Sideloads (`microemu-sideload install`), with per package state in `~/.local/share/microemu/android/sideload/<pkg>`:
 
 - Package name and version code from Lepton's `apk-info-extractor`, cached by path, size and mtime.
 - Installed on stdin through `/system/bin/cmd`: `cmd package install -r -g -S <size>` for one file, and for a split set
   `install-create -r -g`, `install-write -S <size>` per file and `install-commit`, with `install-abandon` after a failed
-  write. A split set is a folder with a `base.apk` and every other `*.apk` beside it; a `base.apk` in the ROMs root is
-  installed alone. Then `cmd appops set <pkg> MANAGE_EXTERNAL_STORAGE allow` and a `speed` compile. Reinstalled when the
-  sha256 of its files changes, data kept.
+  write or when a file cannot be read. A split set is a folder with a `base.apk` and every other `*.apk` beside it whose
+  name does not start with `-`; a `base.apk` in the ROMs root is installed alone. Then `cmd appops set <pkg>
+  MANAGE_EXTERNAL_STORAGE allow` and a `speed` compile. Reinstalled when the sha256 of its files changes, data kept.
 - Refused: an older version code than installed, a package installed from Play (`installer` in `packages.xml`, or
   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`).
 - A package whose file is gone is marked `stale`, never uninstalled; a file moved with the same content only updates
@@ -528,8 +550,9 @@ on the device.
 `microemu-gapps-install` (refused while `microemu-play.service` or `microemu-play-update.service` runs, either container
 exists, or any `label=lepton=true` container exists):
 
-1. Downloads MindTheGapps 11.0.0 arm64 `20230922_081122` and 14.0.0 arm64 `20250203_200051` from GitHub with `curl
-   --proto =https --proto-redir =https` into `~/.cache/microemu/gapps/`, checked by size and sha256.
+1. Downloads MindTheGapps 11.0.0 arm64 `20230922_081122` and 14.0.0 arm64 `20250203_200051` from GitHub through
+   `microemu-fetch` (`curl --proto =https --proto-redir =https`, checked by size and sha256) into
+   `~/.cache/microemu/gapps/`.
 2. Extracts GSF, GmsCore 20.45.16, the permission and sysconfig XMLs from MTG 11 and Play Store 36.6.25 from MTG 14
    (MTG 11's Play Store has no arm64 libraries) into `~/.local/share/microemu/gapps/mtg11-20230922.vending-36.6.25.tmp/`,
    and writes `privapp-permissions-google-p.xml` with MTG 14's `com.android.vending` block. Every file is checked
@@ -593,7 +616,8 @@ as its `STEAM_COMPAT_DATA_PATH` label, with the layer off, or with `microemu-pla
 (active or activating; no option is recorded then). Otherwise it starts `microemu-play-update.service` and
 follows its journal; `--no-block` (the ES-DE entry) starts it and returns. The unit (`Type=oneshot`, `KillMode=mixed`,
 `TimeoutStartSec=31min`, `Conflicts=` and `Before=microemu-play.service`, `SyslogIdentifier=microemu-play-update`, no
-dependency on the session) checks again that `microemu-play.service` is inactive, then starts a private gamescope:
+dependency on the session) checks again that `microemu-play.service` is inactive, moves a context left at the old path,
+then starts a private gamescope:
 `$XDG_RUNTIME_DIR/microemu/headless/` emptied and made 0700, gamescope run as `--backend headless -W <width>
 -H <height> --expose-wayland -R <dir>/ready -- sleep infinity` with `XDG_RUNTIME_DIR` set to that dir, width and height
 from `/usr/share/microemu/android/display`, output in `~/.local/share/microemu/android/headless-gamescope.log`. It waits

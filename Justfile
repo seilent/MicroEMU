@@ -35,6 +35,7 @@ test-android:
     bash tests/pad-fuzz-test.sh
     bash tests/stub-test.sh
     bash tests/gapps-install-test.sh
+    bash tests/keyboard-test.sh
     bash tests/play-update-test.sh
     bash tests/sync-test.sh
     bash tests/lepton-test.sh
