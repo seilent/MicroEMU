@@ -4,7 +4,7 @@ set -u
 PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 [[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-apk: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
 SESSION=gamescope-session-plus@microemu.service
-LEPTON="${MICROEMU_LEPTON:-/usr/share/steam/compatibilitytools.d/lepton-armada/lepton}"
+LEPTON="${MICROEMU_LEPTON:-/usr/libexec/microemu/microemu-lepton}"
 SIDELOAD="${MICROEMU_SIDELOAD:-/usr/libexec/microemu/microemu-sideload}"
 WATCH="${MICROEMU_APK_WATCH:-/usr/libexec/microemu/microemu-apk-watch}"
 UPDATE="${MICROEMU_PLAY_UPDATE:-/usr/bin/microemu-play-update}"

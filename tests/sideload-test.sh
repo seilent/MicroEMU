@@ -318,6 +318,26 @@ MICROEMU_PLAY_NAME=Bad run install "${a2048}"
 [[ ! -e "${STATE}/container" ]] || fail "bad name: podman called"
 rm -rf "${named:?}" "${T:?}/home"
 
+case_name="extractor from the runtime"
+reset
+extractor="${T}/runtime/liblepton/apk_extractor/bin/apk-info-extractor"
+mkdir -p "${extractor%/*}"
+cp "${T}/bin/apk-info-extractor" "${extractor}"
+chmod 0755 "${extractor}"
+printf '#!/usr/bin/bash\nprintf "%%s\\n" "%s"\n' "${T}/runtime" > "${T}/bin/lepton-runtime"
+chmod 0755 "${T}/bin/lepton-runtime"
+make_apk "${a2048}" one com.uberspot.a2048 25
+rc=0
+out=$(MICROEMU_APK_INFO="" MICROEMU_LEPTON_DIR_CMD="${T}/bin/lepton-runtime" "${sideload}" install "${a2048}" 2> "${STATE}/stderr") || rc=$?
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+grep -qxF "extractor --print-app-id ${a2048}" "${STATE}/extractor" || fail "the runtime's extractor did not run: $(cat "${STATE}/extractor")"
+rm -rf "${T}/runtime"
+
+case_name="steamapps common Lepton named twice"
+named=$(grep -rl 'steamapps/common/Lepton' "${repo}/android/data" "${repo}/build" | sort | tr '\n' ' ')
+[[ "${named}" == "${repo}/android/data/usr/libexec/microemu/microemu-lepton ${repo}/android/data/usr/libexec/microemu/microemu-lepton-dir " ]] \
+    || fail "steamapps/common/Lepton is named by: ${named}"
+
 case_name="prune with nothing stale"
 reset
 rc=0

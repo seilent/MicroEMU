@@ -58,17 +58,48 @@ fi
 microemu_context=${LEPTON_CONTEXT}
 microemu_data=${STEAM_COMPAT_DATA_PATH:-}
 microemu_reviewed="${MICROEMU_LEPTON_REVIEWED:-/usr/share/microemu/android/lepton-reviewed}"
-if ! microemu_sums=$(export LC_ALL=C && cd "${MICROEMU_LEPTON_RUNTIME}" && sha256sum lepton liblepton/*.sh sysbake.xattrs) \
-    || [[ ! -f "${microemu_reviewed}" || "${microemu_sums}" != "$(cat "${microemu_reviewed}")" ]]; then
-    microemu_say "Lepton in ${MICROEMU_LEPTON_RUNTIME} is not the build in ${microemu_reviewed}, refusing"
+microemu_buildid=${MICROEMU_LEPTON_RUNTIME##*/}
+microemu_block=${microemu_reviewed}/${microemu_buildid}
+if [[ "${microemu_reviewed}" != /* || ! -d "${microemu_reviewed}" \
+    || ! -f "${microemu_block}" || -L "${microemu_block}" ]]; then
+    microemu_say "Lepton build ${microemu_buildid} is not one MicroEMU knows, refusing"
     exit 1
 fi
-if [[ "$(grep ro.build.version.sdk= "${MICROEMU_LEPTON_RUNTIME}/images/rootfs/system/build.prop" 2>/dev/null \
-    | sed 's/.*=//g')" != 30 ]]; then
+if [[ ! -d "${MICROEMU_LEPTON_RUNTIME}/images/rootfs" || -L "${MICROEMU_LEPTON_RUNTIME}/images/rootfs" \
+    || ! -d "${MICROEMU_LEPTON_RUNTIME}/sysbake" || -L "${MICROEMU_LEPTON_RUNTIME}/sysbake" ]]; then
+    microemu_say "Lepton in ${MICROEMU_LEPTON_RUNTIME} has no images/rootfs or sysbake directory, refusing"
+    exit 1
+fi
+if [[ "$(sed -n 's/^ro\.build\.version\.sdk=//p' "${MICROEMU_LEPTON_RUNTIME}/images/rootfs/system/build.prop" 2>/dev/null)" != 30 ]]; then
     microemu_say "Lepton in ${MICROEMU_LEPTON_RUNTIME} is not Android SDK 30, refusing"
     exit 1
 fi
-unset microemu_sums microemu_reviewed
+microemu_paths() {
+    find . -mindepth 1 \( -path ./images/rootfs -o -path ./sysbake -o -path ./LICENSES \
+        -o -path ./LICENSE.md -o -path ./README.md -o -path ./images/NOTICE.txt \) -prune \
+        -o \( -type f -o -type l \) -printf '%P\n'
+    printf '%s\n' images/rootfs/system/build.prop images/rootfs/system/etc/prop.default \
+        images/rootfs/vendor/odm/etc/build.prop sysbake/system/packages.xml
+}
+microemu_entry() {
+    local microemu_target
+    if [[ -L "${MICROEMU_LEPTON_RUNTIME}/$1" ]]; then
+        microemu_target=$(readlink "${MICROEMU_LEPTON_RUNTIME}/$1") || return 1
+        printf 'link  %s  %s\n' "$1" "${microemu_target}"
+    elif [[ -f "${MICROEMU_LEPTON_RUNTIME}/$1" ]]; then
+        printf '%s  %s\n' "$(sha256sum < "${MICROEMU_LEPTON_RUNTIME}/$1" | cut -d' ' -f1)" "$1"
+    else
+        printf 'missing  %s\n' "$1"
+    fi
+}
+microemu_entries=$(cd "${MICROEMU_LEPTON_RUNTIME}" && microemu_paths | LC_ALL=C sort \
+    | while IFS= read -r microemu_path; do microemu_entry "${microemu_path}"; done)
+
+if [[ "${microemu_entries}" != "$(cat "${microemu_block}")" ]]; then
+    microemu_say "Lepton in ${MICROEMU_LEPTON_RUNTIME} is not the build in ${microemu_block}, refusing"
+    exit 1
+fi
+unset microemu_entries microemu_reviewed microemu_buildid microemu_block microemu_path
 microemu_rc=0
 podman container exists "lepton-${LEPTON_CONTEXT}" 2>/dev/null || microemu_rc=$?
 case "${microemu_rc}" in

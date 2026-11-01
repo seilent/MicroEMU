@@ -52,7 +52,12 @@ done < "${STATE}/script"
 STUB
 cat > "${T}/bin/lepton-dir" <<STUB
 #!/usr/bin/bash
-[[ -e "\${STATE}/no-lepton-dir" ]] && exit 1
+[[ "\$1" == runtime ]] || exit 99
+echo "runtime" >> "\${STATE}/runtime-cmd"
+if [[ -e "\${STATE}/no-lepton-dir" ]]; then
+    echo "microemu-lepton: Lepton is not installed. Install it in Steam." >&2
+    exit 1
+fi
 echo "${T}/lepton"
 STUB
 cat > "${T}/bin/pad-nodes" <<'STUB'
@@ -142,7 +147,7 @@ run
 [[ "${rc}" == 3 ]] || fail "exit code ${rc}, expected lepton's 3: $(cat "${STATE}/stderr")"
 for var in TERM=dumb APP_WANTS_FLATSCREEN=true GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
     "STEAM_COMPAT_DATA_PATH=${MICROEMU_PLAY_CONTEXT}" LEPTON_NO_CLEANUP=true LEPTON_KEEP_CONTEXT=1 \
-    "CONTAINERS_CONF_OVERRIDE=${conf}"; do
+    "CONTAINERS_CONF_OVERRIDE=${conf}" "MICROEMU_LEPTON_RUNTIME=${T}/lepton"; do
     grep -qx "${var}" "${STATE}/env" || fail "environment lacks ${var}"
 done
 grep -q '^SteamAppId=' "${STATE}/env" && fail "SteamAppId reached lepton"
@@ -167,6 +172,7 @@ grep -qx "starting" "${STATE}/stderr" || fail "boot output not in the journal"
 grep -q "logcat after boot" "${STATE}/stderr" && fail "post boot output reached the journal"
 [[ "$(cat "${MICROEMU_ANDROID_DATA}/lepton.log")" == $'logcat after boot\nmicroemu-play-run: lepton start exited with 3' ]] || fail "lepton.log: $(cat "${MICROEMU_ANDROID_DATA}/lepton.log")"
 [[ "$(cat "${MICROEMU_PLAY_CONTEXT}/microemu-stamp")" == "3.0.5 3.0.3 gapps=none" ]] || fail "stamp not written"
+[[ "$(wc -l < "${STATE}/runtime-cmd")" == 1 ]] || fail "microemu-lepton runtime ran $(wc -l < "${STATE}/runtime-cmd") times, not once"
 [[ "$(cat "${MICROEMU_ANDROID_DATA}/boot.log")" == "I ActivityManager: start" ]] || fail "boot log: $(cat "${MICROEMU_ANDROID_DATA}/boot.log" 2>/dev/null)"
 grep -q "lepton start exited with 3" "${STATE}/stderr" || fail "exit not logged"
 opts="${MICROEMU_PLAY_CONTEXT}/microemu-opts"
@@ -393,7 +399,7 @@ rm -f "${MICROEMU_LEPTON}.off"
 mv "${MICROEMU_LEPTON}" "${MICROEMU_LEPTON}.off"
 run
 mv "${MICROEMU_LEPTON}.off" "${MICROEMU_LEPTON}"
-[[ "${rc}" == 1 ]] || fail "lepton-armada missing exit ${rc}"
+[[ "${rc}" == 1 ]] || fail "microemu-lepton missing exit ${rc}"
 [[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-start-failed")" == "${MICROEMU_LEPTON} missing" ]] || fail "refusal reason not written"
 reset "Boot complete!;exit 0"
 mkdir -p "${MICROEMU_RUNTIME_DIR}"
@@ -406,7 +412,11 @@ run
 reset "exit 0"
 : > "${STATE}/no-lepton-dir"
 run
-[[ "${rc}" == 1 ]] && grep -q "Steam's Lepton is not installed" "${STATE}/stderr" || fail "no Lepton install: exit ${rc}"
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-run: Lepton is not installed. Install it in Steam." "${STATE}/stderr" \
+    || fail "no Lepton install: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-start-failed")" == "Lepton is not installed. Install it in Steam." ]] \
+    || fail "no Lepton install: the refusal text not written for ES-DE: $(cat "${MICROEMU_RUNTIME_DIR}/play-start-failed")"
+[[ "$(grep -c '^runtime$' "${STATE}/runtime-cmd")" == 1 ]] || fail "no Lepton install: runtime not called once: $(cat "${STATE}/runtime-cmd")"
 reset "exit 0"
 mv "${T}/lepton/images/rootfs/vendor/odm/etc/build.prop" "${T}/odm.off"
 run

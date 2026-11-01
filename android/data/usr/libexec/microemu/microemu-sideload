@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 set -uo pipefail
 
-LEPTON_DIR_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton-dir}"
+LEPTON_RUNTIME_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton}"
 PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 [[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-sideload: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
 CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
@@ -32,7 +32,7 @@ extractor() {
         return 0
     fi
     local dir
-    dir=$("${LEPTON_DIR_CMD}") || return 1
+    dir=$("${LEPTON_RUNTIME_CMD}" runtime) || return 1
     printf '%s\n' "${dir}/liblepton/apk_extractor/bin/apk-info-extractor"
 }
 

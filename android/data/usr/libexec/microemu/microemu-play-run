@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 set -uo pipefail
 
-LEPTON="${MICROEMU_LEPTON:-/usr/share/steam/compatibilitytools.d/lepton-armada/lepton}"
-LEPTON_DIR_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton-dir}"
+LEPTON="${MICROEMU_LEPTON:-/usr/libexec/microemu/microemu-lepton}"
+LEPTON_RUNTIME_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton}"
 PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
 RUN="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/lepton"
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
@@ -214,8 +214,11 @@ fi
 density=$(sed -n 's/^density=//p' "${DISPLAY_FILE}" 2>/dev/null | head -n 1)
 [[ "${density}" =~ ^[0-9]+$ ]] || fail "no density in ${DISPLAY_FILE}"
 [[ -x "${LEPTON}" ]] || fail "${LEPTON} missing"
-lepton_dir=$("${LEPTON_DIR_CMD}") || fail "Steam's Lepton is not installed"
-odm_source="${lepton_dir}/images/rootfs/vendor/odm/etc/build.prop"
+lepton_err=$(mktemp) || fail "cannot make a temp file"
+lepton_runtime=$("${LEPTON_RUNTIME_CMD}" runtime 2> "${lepton_err}") \
+    || fail "$(grep -v '^$' "${lepton_err}" | sed -n '$p' | sed 's/^microemu-lepton: //')"
+rm -f "${lepton_err}"
+odm_source="${lepton_runtime}/images/rootfs/vendor/odm/etc/build.prop"
 [[ -f "${odm_source}" ]] || fail "${odm_source} missing"
 
 mkdir -p "${RUN}" "${DATA}" "${CONTEXT}/internal"
@@ -263,7 +266,7 @@ fi
     echo "mounts = [$(IFS=,; echo "${mounts[*]}")]"
 } > "${RUN}/containers.conf"
 
-stamp="$(cat "${lepton_dir}/version.txt" 2>/dev/null) $(cat "${lepton_dir}/images/version.txt" 2>/dev/null) gapps=${gapps_set:-none}"
+stamp="$(cat "${lepton_runtime}/version.txt" 2>/dev/null) $(cat "${lepton_runtime}/images/version.txt" 2>/dev/null) gapps=${gapps_set:-none}"
 stamp_changed=0
 if [[ "${old_stamp}" != "${stamp}" ]]; then
     stamp_changed=1
@@ -274,7 +277,7 @@ fi
 unset SteamAppId LD_LIBRARY_PATH
 export TERM=dumb APP_WANTS_FLATSCREEN=true GAMESCOPE_WAYLAND_DISPLAY="${display}"
 [[ "${NAME}" != headless-* ]] || export ARMADA_EXT_WAYLAND_DISPLAY=
-export STEAM_COMPAT_DATA_PATH="${CONTEXT}" LEPTON_NO_CLEANUP=true LEPTON_KEEP_CONTEXT=1
+export STEAM_COMPAT_DATA_PATH="${CONTEXT}" LEPTON_NO_CLEANUP=true LEPTON_KEEP_CONTEXT=1 MICROEMU_LEPTON_RUNTIME="${lepton_runtime}"
 export CONTAINERS_CONF_OVERRIDE="${RUN}/containers.conf"
 
 rm -f "${RUN}/lepton.out"
