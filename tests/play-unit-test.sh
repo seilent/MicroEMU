@@ -25,6 +25,8 @@ export MICROEMU_GAPPS="${T}/gapps"
 export MICROEMU_STUB_DIR="${T}/stub"
 export MICROEMU_ANDROID_SYNC="${T}/bin/sync"
 export MICROEMU_ANDROID_OPTS="${repo}/android/data/usr/share/microemu/android/opts"
+export MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move"
+export STATE_HOME="${T}/xdg-state"
 printf 'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\n' > "${T}/lepton/images/rootfs/vendor/odm/etc/build.prop"
 echo 3.0.5 > "${T}/lepton/version.txt"
 echo 3.0.3 > "${T}/lepton/images/version.txt"
@@ -45,7 +47,7 @@ while IFS= read -r step; do
         steam-on) : > "${STATE}/steam" ;;
         steam-off) rm -f "${STATE}/steam" ;;
         rmpipe) rm -f "${MICROEMU_STEAM_PIPE}" ;;
-        pipe*) timeout 2 bash -c 'printf "%s\n" "$1" > "$2"' _ "${step#pipe }" "${MICROEMU_STEAM_PIPE}" || echo "pipe blocked" >> "${STATE}/events" ;;
+        pipe*) timeout 2 bash -c 'printf "%s\n" "$1" > "$2"' _ "${step#pipe }" "${MICROEMU_STEAM_PIPE:-${MICROEMU_ANDROID_DATA}/home/.steam/steam.pipe}" || echo "pipe blocked" >> "${STATE}/events" ;;
         *) echo "${step}"; echo "out ${step}" >> "${STATE}/events" ;;
     esac
 done < "${STATE}/script"
@@ -56,6 +58,10 @@ cat > "${T}/bin/lepton-dir" <<STUB
 echo "runtime" >> "\${STATE}/runtime-cmd"
 if [[ -e "\${STATE}/no-lepton-dir" ]]; then
     echo "microemu-lepton: Lepton is not installed. Install it in Steam." >&2
+    exit 1
+fi
+if [[ -e "\${STATE}/unreviewed" ]]; then
+    echo "microemu-lepton: Lepton build 25772115 is not one MicroEMU knows, refusing" >&2
     exit 1
 fi
 echo "${T}/lepton"
@@ -122,7 +128,7 @@ failures=0
 fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 reset() {
-    rm -rf "${STATE}" "${MICROEMU_RUNTIME_DIR}"
+    rm -rf "${STATE}" "${MICROEMU_RUNTIME_DIR}" "${STATE_HOME}"
     mkdir -p "${STATE}"
     : > "${STATE}/events"
     : > "${STATE}/podman"
@@ -137,7 +143,7 @@ reset() {
 
 run() {
     rc=0
-    SteamAppId=1234 LD_LIBRARY_PATH=/appimage/lib "${run_script}" 2> "${STATE}/stderr" || rc=$?
+    XDG_STATE_HOME="${STATE_HOME}" SteamAppId=1234 LD_LIBRARY_PATH=/appimage/lib "${run_script}" 2> "${STATE}/stderr" || rc=$?
 }
 
 events() { cat "${STATE}/events"; }
@@ -252,7 +258,7 @@ headless || rc=$?
 grep -q "^podman exec lepton-headless-microemu-play /system/bin/sh -c" "${STATE}/podman" || fail "headless: guest settings not applied on its container"
 [[ "${rc}" == 0 ]] || fail "headless exit ${rc}: $(cat "${STATE}/stderr")"
 grep -qx "GAMESCOPE_WAYLAND_DISPLAY=microemu/headless/gamescope-0" "${STATE}/env" || fail "headless: display not passed to lepton"
-grep -qx "ARMADA_EXT_WAYLAND_DISPLAY=" "${STATE}/env" || fail "headless: ARMADA_EXT_WAYLAND_DISPLAY not set empty"
+grep -q "ARMADA_EXT_WAYLAND_DISPLAY" "${STATE}/env" && fail "headless: an armada name passed to lepton"
 grep -q "/dev/input/" "${conf}" && fail "headless: pad nodes mounted: $(cat "${conf}")"
 grep -qx "lepton start headless-microemu-play" "${STATE}/events" || fail "headless: lepton not run as start headless-microemu-play: $(events)"
 grep -q "^notify" "${STATE}/events" && fail "headless: systemd-notify called: $(events)"
@@ -309,10 +315,11 @@ run
 reset "Boot complete!;sleep 0.3;exit 0"
 rc=0
 env -u MICROEMU_PLAY_CONTEXT HOME="${T}/home" "${run_script}" 2> "${STATE}/stderr" || rc=$?
-[[ "${rc}" == 0 ]] && grep -qx "STEAM_COMPAT_DATA_PATH=${T}/home/.local/share/lepton/contexts/probe-lh-copy" "${STATE}/env" \
-    && [[ -d "${T}/home/.local/share/lepton/contexts/probe-lh-copy/internal" && ! -e "${T}/home/.local/share/lepton/contexts/microemu-play" ]] \
+named_default="${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/probe-lh-copy"
+[[ "${rc}" == 0 ]] && grep -qx "STEAM_COMPAT_DATA_PATH=${named_default}" "${STATE}/env" \
+    && [[ -d "${named_default}/internal" && ! -e "${T}/home/.local/share/lepton/contexts/probe-lh-copy" && ! -e "${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/microemu-play" ]] \
     || fail "named, default context: exit ${rc}: $(grep STEAM_COMPAT_DATA_PATH "${STATE}/env"): $(cat "${STATE}/stderr")"
-rm -rf "${T:?}/home"
+rm -rf "${T:?}/home" "${MICROEMU_ANDROID_DATA:?}/home"
 export MICROEMU_PLAY_CONTEXT="${T}/contexts/probe-lh-copy"
 reset "Boot complete!;sleep 0.3;exit 0"
 run
@@ -356,6 +363,93 @@ done
 unset MICROEMU_PLAY_NAME
 rm -rf "${MICROEMU_PLAY_CONTEXT:?}"
 export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
+
+move_home="${T}/move/home"
+move_data="${T}/move/data"
+move_old="${move_home}/.local/share/lepton/contexts/microemu-play"
+move_new="${move_data}/home/.local/share/lepton/contexts/microemu-play"
+move_run() {
+    rc=0
+    env -u MICROEMU_PLAY_CONTEXT MICROEMU_ANDROID_DATA="${move_data}" HOME="${move_home}" "${run_script}" 2> "${STATE}/stderr" || rc=$?
+}
+rm -rf "${T:?}/move"
+mkdir -p "${move_old}/internal"
+reset "Boot complete!;sleep 0.3;exit 0"
+move_run
+[[ "${rc}" == 0 ]] || fail "move: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "microemu-play-run: moved ${move_old} to ${move_new}" "${STATE}/stderr" || fail "move: not logged: $(cat "${STATE}/stderr")"
+[[ -d "${move_new}/internal" && ! -e "${move_old}" ]] || fail "move: context not moved"
+grep -qx "STEAM_COMPAT_DATA_PATH=${move_new}" "${STATE}/env" || fail "move: not started on the moved context"
+rm -rf "${move_new:?}"
+mkdir -p "${move_old}/internal" "${move_new}/kept"
+reset "Boot complete!;sleep 0.3;exit 0"
+move_run
+[[ "${rc}" == 0 ]] || fail "both paths: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "microemu-play-run: both paths exist, using ${move_new}" "${STATE}/stderr" || fail "both paths: not logged: $(cat "${STATE}/stderr")"
+[[ -d "${move_old}/internal" && -d "${move_new}/kept" ]] || fail "both paths: one of them deleted"
+grep -qx "STEAM_COMPAT_DATA_PATH=${move_new}" "${STATE}/env" || fail "both paths: not started on the new one"
+rm -rf "${move_old:?}" "${move_new:?}"
+mkdir -p "${move_new}/kept"
+ln -s "${move_new}" "${move_old}"
+reset "Boot complete!;sleep 0.3;exit 0"
+move_run
+[[ "${rc}" == 0 ]] || fail "linked old context with the new one present: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "microemu-play-run: both paths exist, using ${move_new}" "${STATE}/stderr" \
+    || fail "linked old context with the new one present: not logged: $(cat "${STATE}/stderr")"
+[[ -d "${move_new}/kept" && -L "${move_old}" ]] || fail "linked old context with the new one present: a path was removed"
+rm -f "${move_old}"
+rm -rf "${move_new:?}"
+ln -s "${T}/elsewhere" "${move_old}"
+reset "Boot complete!;exit 0"
+move_run
+[[ "${rc}" == 1 ]] || fail "linked old context: exit ${rc}"
+grep -q "${move_old} is a link, refusing to move it" "${STATE}/stderr" || fail "linked old context: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -L "${move_old}" && ! -e "${move_new}" ]] || fail "linked old context: the context moved"
+grep -q "lepton start" "${STATE}/events" && fail "linked old context: lepton started"
+rm -f "${move_old}"
+mkdir -p "${move_old}/internal"
+other_fs=/dev/shm/microemu-play-test.$$
+[[ "$(stat -c %d /dev/shm)" != "$(stat -c %d "${T}")" ]] || fail "cross filesystem: /dev/shm is on ${T}'s filesystem, the case cannot run"
+mkdir -p "${other_fs}"
+reset "Boot complete!;exit 0"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT MICROEMU_ANDROID_DATA="${other_fs}" HOME="${move_home}" "${run_script}" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 1 ]] || fail "cross filesystem: exit ${rc}"
+grep -q "are on different filesystems, move ${move_old}" "${STATE}/stderr" \
+    || fail "cross filesystem: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -d "${move_old}" && ! -e "${other_fs}/home/.local/share/lepton/contexts/microemu-play" ]] || fail "cross filesystem: the context moved"
+rm -rf "${other_fs:?}"
+rm -rf "${T:?}/move"
+mkdir -p "${move_old}/internal"
+reset "Boot complete!;exit 0"
+echo lepton-microemu-play > "${STATE}/other"
+move_run
+[[ "${rc}" == 1 ]] || fail "move with a container: exit ${rc}"
+grep -q "container lepton-microemu-play exists, refusing to move ${move_old}" "${STATE}/stderr" \
+    || fail "move with a container: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -d "${move_old}" && ! -e "${move_new}" ]] || fail "move with a container: the context moved"
+grep -q "lepton start" "${STATE}/events" && fail "move with a container: lepton started"
+rm -f "${STATE}/other"
+rm -rf "${T:?}/move"
+mkdir -p "${move_old}/internal"
+reset "Boot complete!;exit 0"
+for _ in 1 2 3 4 5; do
+    rm -rf "${move_old:?}" "${move_new:?}"
+    mkdir -p "${move_old}/internal"
+    env -u MICROEMU_PLAY_CONTEXT MICROEMU_ANDROID_DATA="${move_data}" HOME="${move_home}" "${MICROEMU_CONTEXT_MOVE}" > "${STATE}/move-a" 2>&1 &
+    pid_a=$!
+    env -u MICROEMU_PLAY_CONTEXT MICROEMU_ANDROID_DATA="${move_data}" HOME="${move_home}" "${MICROEMU_CONTEXT_MOVE}" > "${STATE}/move-b" 2>&1 &
+    pid_b=$!
+    rc_a=0
+    rc_b=0
+    wait "${pid_a}" || rc_a=$?
+    wait "${pid_b}" || rc_b=$?
+    [[ "${rc_a}" == 0 && "${rc_b}" == 0 ]] || fail "concurrent move: exits ${rc_a} and ${rc_b}: $(cat "${STATE}/move-a" "${STATE}/move-b")"
+    [[ "$(cat "${STATE}/move-a" "${STATE}/move-b" | grep -c '^moved ')" == 1 ]] \
+        || fail "concurrent move: not one move: $(cat "${STATE}/move-a" "${STATE}/move-b")"
+    [[ -d "${move_new}/internal" && ! -e "${move_old}" ]] || fail "concurrent move: the context is not at the new path"
+done
+rm -rf "${move_old:?}" "${move_new:?}"
 
 reset "Boot complete!;exit 0"
 run
@@ -409,14 +503,23 @@ run
 reset "exit 0"
 run
 [[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-start-failed")" == "android exited during boot, see ${MICROEMU_ANDROID_DATA}/boot.log" ]] || fail "early exit reason not written"
+[[ ! -e "${STATE_HOME}/microemu/lepton-install-requested" ]] || fail "a boot failure asked for a Lepton install"
 reset "exit 0"
 : > "${STATE}/no-lepton-dir"
 run
 [[ "${rc}" == 1 ]] && grep -qx "microemu-play-run: Lepton is not installed. Install it in Steam." "${STATE}/stderr" \
     || fail "no Lepton install: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -f "${STATE_HOME}/microemu/lepton-install-requested" ]] || fail "no Lepton install: the install request not written"
+[[ ! -s "${STATE_HOME}/microemu/lepton-install-requested" ]] || fail "no Lepton install: the install request holds content"
 [[ "$(cat "${MICROEMU_RUNTIME_DIR}/play-start-failed")" == "Lepton is not installed. Install it in Steam." ]] \
     || fail "no Lepton install: the refusal text not written for ES-DE: $(cat "${MICROEMU_RUNTIME_DIR}/play-start-failed")"
 [[ "$(grep -c '^runtime$' "${STATE}/runtime-cmd")" == 1 ]] || fail "no Lepton install: runtime not called once: $(cat "${STATE}/runtime-cmd")"
+reset "exit 0"
+: > "${STATE}/unreviewed"
+run
+[[ "${rc}" == 1 ]] && grep -qx "microemu-play-run: Lepton build 25772115 is not one MicroEMU knows, refusing" "${STATE}/stderr" \
+    || fail "unreviewed build: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ ! -e "${STATE_HOME}/microemu/lepton-install-requested" ]] || fail "unreviewed build asked for a Lepton install"
 reset "exit 0"
 mv "${T}/lepton/images/rootfs/vendor/odm/etc/build.prop" "${T}/odm.off"
 run
@@ -436,13 +539,23 @@ run
 grep -q "android asked to open" "${STATE}/stderr" && fail "pipe read while Steam runs"
 grep -q "pipe blocked" "${STATE}/events" || fail "the pipe had a reader while Steam runs"
 
-reset "exit 0"
+reset "Boot complete!;exit 0"
 rm -f "${MICROEMU_STEAM_PIPE}"
-start=$(date +%s%3N)
+mkdir -p "${MICROEMU_STEAM_PIPE%/*}"
+mkfifo "${MICROEMU_STEAM_PIPE}"
 run
-took=$(( $(date +%s%3N) - start ))
-grep -q "no ${MICROEMU_STEAM_PIPE}, Steam links from Android are not read" "${STATE}/stderr" || fail "missing pipe not logged"
-(( took < 3000 )) || fail "missing pipe: took ${took} ms"
+[[ "${rc}" == 0 ]] || fail "configured pipe: exit ${rc}: $(cat "${STATE}/stderr")"
+
+reset "pipe steam://open/games;Boot complete!;sleep 0.3;exit 0"
+default_pipe="${MICROEMU_ANDROID_DATA}/home/.steam/steam.pipe"
+rm -rf "${MICROEMU_ANDROID_DATA:?}/home" "${MICROEMU_STEAM_PIPE}"
+rc=0
+env -u MICROEMU_STEAM_PIPE XDG_STATE_HOME="${STATE_HOME}" "${run_script}" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] || fail "pipe default: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -p "${default_pipe}" ]] || fail "pipe default: the FIFO was not made on the first start"
+grep -qx "microemu-play-run: android asked to open steam://open/games" "${STATE}/stderr" \
+    || fail "pipe default: not read from the Valve HOME: $(cat "${STATE}/stderr")"
+rm -rf "${MICROEMU_ANDROID_DATA:?}/home"
 
 gapps_tree() {
     local set="${MICROEMU_GAPPS}/mtg11-20230922.vending-36.6.25" file

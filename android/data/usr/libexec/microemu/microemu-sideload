@@ -2,11 +2,12 @@
 set -uo pipefail
 
 LEPTON_RUNTIME_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton}"
+CONTEXT_MOVE="${MICROEMU_CONTEXT_MOVE:-/usr/libexec/microemu/microemu-context-move}"
 PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 [[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-sideload: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
-[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-sideload: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${PLAY_NAME}}"
+[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-sideload: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 CACHE="${MICROEMU_ANDROID_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/android}"
 ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
 CONTAINER=lepton-${PLAY_NAME}
@@ -26,6 +27,15 @@ fail() {
 
 guest() { podman exec "${CONTAINER}" "$@"; }
 
+guest_i() { podman exec -i "${CONTAINER}" "$@"; }
+
+move_context() {
+    local out
+    [[ -x "${CONTEXT_MOVE}" ]] || fail "${CONTEXT_MOVE} missing"
+    out=$("${CONTEXT_MOVE}" 2>&1) || fail "${out:-${CONTEXT_MOVE} failed}"
+    [[ -z "${out}" ]] || say "${out}"
+}
+
 extractor() {
     if [[ -n "${MICROEMU_APK_INFO:-}" ]]; then
         printf '%s\n' "${MICROEMU_APK_INFO}"
@@ -37,18 +47,19 @@ extractor() {
 }
 
 apk_set() {
-    local apk=$1 dir names=() name
+    local apk=$1 dir name
     dir=$(dirname "${apk}")
-    if [[ "$(basename "${apk}")" != base.apk || ! -f "${dir}/.armada-apks" ]]; then
+    if [[ "$(basename "${apk}")" != base.apk || "$(readlink -m "${dir}")" == "$(readlink -m "${ROMS}")" ]]; then
         printf '%s\n' "${apk}"
         return 0
     fi
-    mapfile -t names < "${dir}/.armada-apks"
-    [[ "${names[0]:-}" == base.apk ]] || return 1
-    for name in "${names[@]}"; do
-        [[ "${name}" =~ ^[A-Za-z0-9_.-]+\.apk$ && -f "${dir}/${name}" ]] || return 1
-        printf '%s\n' "${dir}/${name}"
-    done
+    {
+        printf '%s\n' "${apk}"
+        for name in "${dir}"/*.apk; do
+            [[ "${name}" != "${apk}" && -f "${name}" && "${name##*/}" != -* ]] || continue
+            printf '%s\n' "${name}"
+        done
+    } | LC_ALL=C sort
 }
 
 apk_info() {
@@ -96,15 +107,14 @@ state_write() {
 }
 
 entries() {
-    local file dir names
+    local file dir
     while IFS= read -r file; do
         dir=$(dirname "${file}")
-        if [[ "$(basename "${file}")" != base.apk && -f "${dir}/.armada-apks" ]] \
-            && grep -qxF "$(basename "${file}")" "${dir}/.armada-apks"; then
+        if [[ "${file##*/}" != base.apk && -f "${dir}/base.apk" && "$(readlink -m "${dir}")" != "$(readlink -m "${ROMS}")" ]]; then
             continue
         fi
         printf '%s\n' "${file}"
-    done < <(find -L "${ROMS}" -type f \( -name '*.apk' -o -name '*.APK' \) 2>/dev/null | sort)
+    done < <(find -L "${ROMS}" -type f \( -name '*.apk' -o -name '*.APK' \) ! -name '-*' 2>/dev/null | sort)
 }
 
 reconcile() {
@@ -150,7 +160,7 @@ prune() {
     while IFS= read -r pkg; do
         [[ "${pkg}" =~ ^[A-Za-z0-9_.]+$ && -f "${STATES}/${pkg}" ]] || continue
         grep -qx stale "${STATES}/${pkg}" || continue
-        out=$(guest /system/bin/cmd_real package uninstall "${pkg}" 2>&1)
+        out=$(guest /system/bin/cmd package uninstall "${pkg}" 2>&1)
         if [[ "${out}" == *Success* ]]; then
             say "${pkg}: uninstalled"
             rm -f "${STATES}/${pkg}"
@@ -167,19 +177,29 @@ prune() {
 }
 
 install_set() {
-    local out id file
+    local out id file size
     if (( $# == 1 )); then
-        guest /system/bin/cmd_real package install -r -g "$1" 2>&1
+        size=$(stat -c %s "$1") || return 1
+        guest_i /system/bin/cmd package install -r -g -S "${size}" < "$1" 2>&1
         return
     fi
-    out=$(guest /system/bin/cmd_real package install-create -r -g 2>&1)
+    out=$(guest /system/bin/cmd package install-create -r -g 2>&1)
     [[ "${out}" =~ \[([0-9]+)\] ]] || { printf '%s\n' "${out}"; return; }
     id=${BASH_REMATCH[1]}
     for file in "$@"; do
-        out=$(guest /system/bin/cmd_real package install-write -S "$(stat -c %s "${file}")" "${id}" "$(basename "${file}")" "${file}" 2>&1)
-        [[ "${out}" == *Success* ]] || { printf '%s\n' "${out}"; return; }
+        if ! size=$(stat -c %s "${file}"); then
+            printf '%s\n' "${file##*/}: cannot read its size"
+            guest /system/bin/cmd package install-abandon "${id}" >/dev/null 2>&1
+            return
+        fi
+        out=$(guest_i /system/bin/cmd package install-write -S "${size}" "${id}" "$(basename "${file}")" - < "${file}" 2>&1)
+        if [[ "${out}" != *Success* ]]; then
+            printf '%s\n' "${out}"
+            guest /system/bin/cmd package install-abandon "${id}" >/dev/null 2>&1
+            return
+        fi
     done
-    guest /system/bin/cmd_real package install-commit "${id}" 2>&1
+    guest /system/bin/cmd package install-commit "${id}" 2>&1
 }
 
 copy_obb() {
@@ -196,7 +216,6 @@ copy_obb() {
 
 prepare() {
     local apk=$1 info pkg
-    apk_set "${apk}" >/dev/null || fail "${apk}: bad .armada-apks list"
     info=$(apk_info "${apk}") || fail "${apk}: cannot read the package name"
     pkg=${info%%	*}
     copy_obb "${pkg}" "$(dirname "${apk}")"
@@ -205,8 +224,7 @@ prepare() {
 
 install() {
     local apk=$1 files=() info pkg version current installed_version installer sha out
-    mapfile -t files < <(apk_set "${apk}") || true
-    (( ${#files[@]} )) || fail "${apk}: bad .armada-apks list"
+    mapfile -t files < <(apk_set "${apk}")
     info=$(apk_info "${apk}") || fail "${apk}: cannot read the package name"
     pkg=${info%%	*}
     version=${info##*	}
@@ -229,9 +247,9 @@ install() {
         fail "${pkg} is installed from Play, not replacing it"
     fi
     [[ "${out}" == *Success* ]] || fail "${pkg}: install failed: ${out}"
-    guest /system/bin/cmd_real appops set "${pkg}" MANAGE_EXTERNAL_STORAGE allow >/dev/null 2>&1 \
+    guest /system/bin/cmd appops set "${pkg}" MANAGE_EXTERNAL_STORAGE allow >/dev/null 2>&1 \
         || say "${pkg}: appops failed"
-    guest /system/bin/cmd_real package compile -m speed "${pkg}" >/dev/null 2>&1 \
+    guest /system/bin/cmd package compile -m speed "${pkg}" >/dev/null 2>&1 \
         || say "${pkg}: compile failed"
     state_write "${pkg}" "${apk}" "${sha}" "${version}"
     say "${pkg} ${version} installed"
@@ -239,8 +257,8 @@ install() {
 }
 
 case "${1:-}" in
-    prepare) [[ -n "${2:-}" ]] || exit 1; prepare "$2" ;;
-    install) [[ -n "${2:-}" ]] || exit 1; install "$2" ;;
+    prepare) [[ -n "${2:-}" ]] || exit 1; move_context; prepare "$2" ;;
+    install) [[ -n "${2:-}" ]] || exit 1; move_context; install "$2" ;;
     installed) [[ -n "${2:-}" ]] || exit 1; installed "$2" ;;
     *) echo "usage: microemu-sideload prepare|install <apk> | installed <pkg>" >&2; exit 1 ;;
 esac

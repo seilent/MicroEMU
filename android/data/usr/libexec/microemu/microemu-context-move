@@ -1,0 +1,49 @@
+#!/usr/bin/bash
+set -u
+
+PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
+[[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "bad MICROEMU_PLAY_NAME ${PLAY_NAME}"; exit 1; }
+DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${PLAY_NAME}}"
+[[ -z "${MICROEMU_PLAY_CONTEXT:-}" ]] || exit 0
+OLD="${HOME}/.local/share/lepton/contexts/${PLAY_NAME}"
+
+move() {
+    local name rc parent
+    [[ -e "${OLD}" || -L "${OLD}" ]] || return 0
+    if [[ -e "${CONTEXT}" ]]; then
+        echo "both paths exist, using ${CONTEXT}"
+        return 0
+    fi
+    if [[ -L "${OLD}" ]]; then
+        echo "${OLD} is a link, refusing to move it"
+        return 1
+    fi
+    for name in "${PLAY_NAME}" "headless-${PLAY_NAME}"; do
+        rc=0
+        podman container exists "lepton-${name}" 2>/dev/null || rc=$?
+        case "${rc}" in
+            1) ;;
+            0) echo "container lepton-${name} exists, refusing to move ${OLD}"; return 1 ;;
+            *) echo "podman container exists failed (rc=${rc}), refusing"; return 1 ;;
+        esac
+    done
+    parent=${CONTEXT%/*}
+    while [[ ! -d "${parent}" && "${parent}" == */* ]]; do
+        parent=${parent%/*}
+    done
+    if [[ "$(stat -c %d "${OLD%/*}" 2>/dev/null)" != "$(stat -c %d "${parent}" 2>/dev/null)" ]]; then
+        echo "${OLD} and ${CONTEXT} are on different filesystems, move ${OLD} to ${CONTEXT} by hand"
+        return 1
+    fi
+    mkdir -p "${CONTEXT%/*}" || { echo "cannot make ${CONTEXT%/*}"; return 1; }
+    if ! mv -T "${OLD}" "${CONTEXT}"; then
+        [[ ! -e "${OLD}" && ! -L "${OLD}" && -e "${CONTEXT}" ]] || { echo "cannot move ${OLD} to ${CONTEXT}"; return 1; }
+    fi
+    echo "moved ${OLD} to ${CONTEXT}"
+}
+
+mkdir -p "${DATA}" || { echo "cannot make ${DATA}"; exit 1; }
+exec {lock}<>"${DATA}/.context-move.lock" || { echo "cannot open ${DATA}/.context-move.lock"; exit 1; }
+flock -x "${lock}" || { echo "cannot lock ${DATA}/.context-move.lock"; exit 1; }
+move

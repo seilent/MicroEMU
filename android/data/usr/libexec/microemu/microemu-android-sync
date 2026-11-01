@@ -9,10 +9,10 @@ import xml.etree.ElementTree as ET
 
 HOME = os.path.expanduser("~")
 PLAY_NAME = os.environ.get("MICROEMU_PLAY_NAME") or "microemu-play"
-CONTEXT = os.environ.get("MICROEMU_PLAY_CONTEXT", os.path.join(HOME, ".local/share/lepton/contexts", PLAY_NAME))
+ANDROID_DATA = os.environ.get("MICROEMU_ANDROID_DATA", os.path.join(HOME, ".local/share/microemu/android"))
+CONTEXT = os.environ.get("MICROEMU_PLAY_CONTEXT", os.path.join(ANDROID_DATA, "home/.local/share/lepton/contexts", PLAY_NAME))
 ROMS = os.environ.get("MICROEMU_ANDROID_ROMS", os.path.join(HOME, "ROMs/androidgames"))
 GAPPS = os.environ.get("MICROEMU_GAPPS", os.path.join(HOME, ".local/share/microemu/gapps"))
-ANDROID_DATA = os.environ.get("MICROEMU_ANDROID_DATA", os.path.join(HOME, ".local/share/microemu/android"))
 SEEN = os.path.join(ANDROID_DATA, "play-installed")
 RUNTIME = os.environ.get("MICROEMU_RUNTIME_DIR") or os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microemu")
 DATA = os.path.join(CONTEXT, "baked/data_overlay")

@@ -17,6 +17,7 @@ export MICROEMU_ANDROID_DATA="${T}/data"
 export MICROEMU_ANDROID_CACHE="${T}/cache"
 export MICROEMU_ANDROID_ROMS="${T}/roms"
 export MICROEMU_APK_INFO="${T}/bin/apk-info-extractor"
+export MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move"
 xml="${MICROEMU_PLAY_CONTEXT}/baked/data_overlay/system/packages.xml"
 states="${MICROEMU_ANDROID_DATA}/sideload"
 
@@ -31,15 +32,36 @@ esac
 STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
-echo "$1 $2" >> "${STATE}/container"
-shift 2
+[[ "${1:-}" != container ]] || { [[ "${2:-}" == exists ]] && exit "${MICROEMU_TEST_EXISTS_RC:-1}"; exit 99; }
+[[ "${1:-}" == exec ]] || exit 99
+name=$2
+n=2
+if [[ "${2:-}" == -i ]]; then
+    name=$3
+    n=3
+fi
+echo "exec ${name}" >> "${STATE}/container"
+shift "${n}"
+case "$*" in
+    "/system/bin/cmd package install -r -g -S "*|"/system/bin/cmd package install-write -S "*)
+        cat > "${STATE}/stdin.raw"
+        sha256sum < "${STATE}/stdin.raw" | cut -d' ' -f1 >> "${STATE}/stdin"
+        ;;
+esac
 echo "$*" >> "${STATE}/guest"
 case "$*" in
-    "/system/bin/cmd_real package install -r -g "*|"/system/bin/cmd_real package install-commit "*) cat "${STATE}/install_out" ;;
-    "/system/bin/cmd_real package install-create -r -g") echo "Success: created install session [1234]" ;;
-    "/system/bin/cmd_real package install-write "*) echo "Success: streamed 10 bytes" ;;
-    "/system/bin/cmd_real package uninstall "*) cat "${STATE}/uninstall_out" ;;
+    "/system/bin/cmd package install -r -g -S "*|"/system/bin/cmd package install-commit "*) cat "${STATE}/install_out" ;;
+    "/system/bin/cmd package install-create -r -g") echo "Success: created install session [1234]" ;;
+    "/system/bin/cmd package install-write -S "*) echo "Success: streamed $(stat -c %s "${STATE}/stdin.raw") bytes" ;;
+    "/system/bin/cmd package uninstall "*) cat "${STATE}/uninstall_out" ;;
 esac
+STUB
+cat > "${T}/bin/stat" <<'STUB'
+#!/usr/bin/bash
+for arg in "$@"; do
+    [[ "${arg}" != *-statfail.apk ]] || exit 1
+done
+exec /usr/bin/stat "$@"
 STUB
 cat > "${T}/bin/logger" <<'STUB'
 #!/usr/bin/bash
@@ -74,6 +96,7 @@ reset() {
     : > "${STATE}/guest"
     : > "${STATE}/log"
     : > "${STATE}/extractor"
+    : > "${STATE}/stdin"
     echo Success > "${STATE}/install_out"
     echo Success > "${STATE}/uninstall_out"
 }
@@ -92,10 +115,11 @@ reset
 make_apk "${a2048}" one com.uberspot.a2048 25
 run install "${a2048}"
 [[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
-expected="/system/bin/cmd_real package install -r -g ${a2048}
-/system/bin/cmd_real appops set com.uberspot.a2048 MANAGE_EXTERNAL_STORAGE allow
-/system/bin/cmd_real package compile -m speed com.uberspot.a2048"
+expected="/system/bin/cmd package install -r -g -S $(stat -c %s "${a2048}")
+/system/bin/cmd appops set com.uberspot.a2048 MANAGE_EXTERNAL_STORAGE allow
+/system/bin/cmd package compile -m speed com.uberspot.a2048"
 [[ "$(cat "${STATE}/guest")" == "${expected}" ]] || fail "guest calls $(cat "${STATE}/guest")"
+[[ "$(cat "${STATE}/stdin")" == "$(sha256sum < "${a2048}" | cut -d' ' -f1)" ]] || fail "the apk did not stream to the guest"
 [[ "$(sed -n 's/^path=//p' "${states}/com.uberspot.a2048")" == "${a2048}" ]] || fail "state path"
 [[ "$(sed -n 's/^version=//p' "${states}/com.uberspot.a2048")" == 25 ]] || fail "state version"
 [[ -n "$(sed -n 's/^sha256=//p' "${states}/com.uberspot.a2048")" ]] || fail "state sha"
@@ -116,7 +140,7 @@ make_apk "${a2048}" two com.uberspot.a2048 26
 touch -d '+1 min' "${a2048}"
 run install "${a2048}"
 [[ "${rc}" == 0 ]] || fail "exit ${rc}"
-[[ "$(guest_count "install -r -g ${a2048}")" == 1 ]] || fail "not reinstalled: $(cat "${STATE}/guest")"
+[[ "$(guest_count "install -r -g -S $(stat -c %s "${a2048}")")" == 1 ]] || fail "not reinstalled: $(cat "${STATE}/guest")"
 [[ "$(sed -n 's/^version=//p' "${states}/com.uberspot.a2048")" == 26 ]] || fail "state version not updated"
 
 case_name="older apk"
@@ -160,26 +184,88 @@ reset
 split="${MICROEMU_ANDROID_ROMS}/game/base.apk"
 make_apk "${split}" base com.example.game 7
 printf 'cfg\n' > "${MICROEMU_ANDROID_ROMS}/game/split_config.arm64_v8a.apk"
-printf 'base.apk\nsplit_config.arm64_v8a.apk\n' > "${MICROEMU_ANDROID_ROMS}/game/.armada-apks"
+make_apk "${MICROEMU_ANDROID_ROMS}/game/split_config.en.apk" de com.example.game 7
 run install "${split}"
 [[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
-expected="/system/bin/cmd_real package install-create -r -g
-/system/bin/cmd_real package install-write -S 5 1234 base.apk ${split}
-/system/bin/cmd_real package install-write -S 4 1234 split_config.arm64_v8a.apk ${MICROEMU_ANDROID_ROMS}/game/split_config.arm64_v8a.apk
-/system/bin/cmd_real package install-commit 1234
-/system/bin/cmd_real appops set com.example.game MANAGE_EXTERNAL_STORAGE allow
-/system/bin/cmd_real package compile -m speed com.example.game"
+expected="/system/bin/cmd package install-create -r -g
+/system/bin/cmd package install-write -S 5 1234 base.apk -
+/system/bin/cmd package install-write -S 4 1234 split_config.arm64_v8a.apk -
+/system/bin/cmd package install-write -S 3 1234 split_config.en.apk -
+/system/bin/cmd package install-commit 1234
+/system/bin/cmd appops set com.example.game MANAGE_EXTERNAL_STORAGE allow
+/system/bin/cmd package compile -m speed com.example.game"
 [[ "$(cat "${STATE}/guest")" == "${expected}" ]] || fail "guest calls $(cat "${STATE}/guest")"
+[[ "$(tail -n 1 "${STATE}/stdin")" == "$(sha256sum < "${MICROEMU_ANDROID_ROMS}/game/split_config.en.apk" | cut -d' ' -f1)" ]] \
+    || fail "the last split did not stream to the guest"
 
-case_name="bad split list"
-printf 'split_config.arm64_v8a.apk\nbase.apk\n' > "${MICROEMU_ANDROID_ROMS}/game/.armada-apks"
+case_name="split entered alone"
 : > "${STATE}/guest"
+rm -f "${states}/com.example.game"
+run install "${MICROEMU_ANDROID_ROMS}/game/split_config.en.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(cat "${STATE}/guest")" == "/system/bin/cmd package install -r -g -S $(stat -c %s "${MICROEMU_ANDROID_ROMS}/game/split_config.en.apk")
+/system/bin/cmd appops set com.example.game MANAGE_EXTERNAL_STORAGE allow
+/system/bin/cmd package compile -m speed com.example.game" ]] || fail "a non base file installed more than itself: $(cat "${STATE}/guest")"
+
+case_name="dash names skipped"
+reset
+make_apk "${MICROEMU_ANDROID_ROMS}/game/base.apk" base com.example.game 7
+make_apk "${MICROEMU_ANDROID_ROMS}/game/-dash.apk" dash com.example.dash 1
+run install "${MICROEMU_ANDROID_ROMS}/game/base.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(cat "${STATE}/guest")" == "/system/bin/cmd package install -r -g -S $(stat -c %s "${MICROEMU_ANDROID_ROMS}/game/base.apk")
+/system/bin/cmd appops set com.example.game MANAGE_EXTERNAL_STORAGE allow
+/system/bin/cmd package compile -m speed com.example.game" ]] || fail "a dash named file joined the set: $(cat "${STATE}/guest")"
+make_apk "${MICROEMU_ANDROID_ROMS}/other.apk" other com.example.other 1
+make_apk "${MICROEMU_ANDROID_ROMS}/-root.apk" root com.example.root 1
+run install "${MICROEMU_ANDROID_ROMS}/other.apk"
+[[ "${rc}" == 0 ]] || fail "root exit ${rc}: $(cat "${STATE}/stderr")"
+"${prune}" > "${STATE}/prune-out" 2>&1
+[[ "$(grep -c . "${STATE}/prune-out")" == 1 ]] || fail "a dash named file was listed: $(cat "${STATE}/prune-out")"
+rm -f "${MICROEMU_ANDROID_ROMS}/game/-dash.apk" "${MICROEMU_ANDROID_ROMS}/-root.apk" "${MICROEMU_ANDROID_ROMS}/other.apk"
+
+case_name="stat failure abandons the session"
+reset
+split="${MICROEMU_ANDROID_ROMS}/game/base.apk"
+make_apk "${split}" base com.example.game 7
+make_apk "${MICROEMU_ANDROID_ROMS}/game/split-statfail.apk" de com.example.game 7
 run install "${split}"
-[[ "${rc}" == 1 ]] || fail "exit ${rc}"
-logged "bad .armada-apks list"
-[[ ! -s "${STATE}/guest" ]] || fail "installed a bad set"
-run prepare "${split}"
-[[ "${rc}" == 1 ]] || fail "prepare exit ${rc}"
+[[ "${rc}" == 1 ]] || fail "stat failure: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "/system/bin/cmd package install-abandon 1234" "${STATE}/guest" || fail "stat failure: the session was not abandoned: $(cat "${STATE}/guest")"
+grep -q "install-commit" "${STATE}/guest" && fail "stat failure: the session was committed: $(cat "${STATE}/guest")"
+
+case_name="base in the roms root"
+reset
+make_apk "${MICROEMU_ANDROID_ROMS}/base.apk" one com.example.one 1
+make_apk "${MICROEMU_ANDROID_ROMS}/other.apk" two com.example.two 2
+run install "${MICROEMU_ANDROID_ROMS}/base.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(cat "${STATE}/guest")" == "/system/bin/cmd package install -r -g -S $(stat -c %s "${MICROEMU_ANDROID_ROMS}/base.apk")
+/system/bin/cmd appops set com.example.one MANAGE_EXTERNAL_STORAGE allow
+/system/bin/cmd package compile -m speed com.example.one" ]] || fail "a base in the ROMs root bundled its neighbours: $(cat "${STATE}/guest")"
+: > "${STATE}/guest"
+rm -f "${states}/com.example.one"
+run install "${MICROEMU_ANDROID_ROMS}/other.apk"
+[[ "${rc}" == 0 && "$(grep -c 'install -r -g' "${STATE}/guest")" == 1 ]] || fail "a base in the ROMs root hid its neighbours: $(cat "${STATE}/guest")"
+rm -f "${MICROEMU_ANDROID_ROMS}/base.apk" "${MICROEMU_ANDROID_ROMS}/other.apk"
+
+case_name="prepare moves the old context first"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+mkdir -p "${MICROEMU_ANDROID_ROMS}/obb"
+echo data > "${MICROEMU_ANDROID_ROMS}/obb/main.25.com.uberspot.a2048.obb"
+old_ctx="${T}/home/.local/share/lepton/contexts/microemu-play"
+mkdir -p "${old_ctx}/baked/data_overlay/system" "${old_ctx}/external/Download"
+echo xml > "${old_ctx}/baked/data_overlay/system/packages.xml"
+echo dl > "${old_ctx}/external/Download/file"
+new_ctx="${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/microemu-play"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT HOME="${T}/home" "${sideload}" prepare "${a2048}" > "${STATE}/out" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 && "$(cat "${STATE}/out")" == com.uberspot.a2048 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -f "${new_ctx}/baked/data_overlay/system/packages.xml" && -f "${new_ctx}/external/Download/file" && ! -e "${old_ctx}" ]] \
+    || fail "the old context was not moved before the obb copy"
+[[ -f "${new_ctx}/external/Android/obb/com.uberspot.a2048/main.25.com.uberspot.a2048.obb" ]] || fail "the obb did not land in the moved context"
+rm -rf "${T:?}/home"
 
 case_name="obb"
 reset
@@ -220,7 +306,7 @@ case_name="prune"
 grep -q "^com.uberspot.a2048 ${a2048}$" "${STATE}/prune-out" || fail "prune did not list: $(cat "${STATE}/prune-out")"
 [[ "$(cat "${MICROEMU_ANDROID_DATA}/prune")" == com.uberspot.a2048 ]] || fail "not queued"
 run install "${other}"
-[[ "$(guest_count "/system/bin/cmd_real package uninstall com.uberspot.a2048")" == 1 ]] || fail "queued package not uninstalled"
+[[ "$(guest_count "/system/bin/cmd package uninstall com.uberspot.a2048")" == 1 ]] || fail "queued package not uninstalled"
 [[ ! -e "${states}/com.uberspot.a2048" && ! -e "${MICROEMU_ANDROID_DATA}/prune" ]] || fail "state or queue left after the uninstall"
 [[ -e "${states}/com.example.other" ]] || fail "other state removed"
 
@@ -298,11 +384,12 @@ reset
 make_apk "${a2048}" one com.uberspot.a2048 25
 mkdir -p "${MICROEMU_ANDROID_ROMS}/obb"
 echo data > "${MICROEMU_ANDROID_ROMS}/obb/main.25.com.uberspot.a2048.obb"
-mkdir -p "${T}/home/.local/share/lepton/contexts"
+default_ctx="${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/probe-lh-copy"
 MICROEMU_PLAY_NAME=probe-lh-copy HOME="${T}/home" MICROEMU_PLAY_CONTEXT='' run prepare "${a2048}"
-[[ "${rc}" == 0 && -f "${T}/home/.local/share/lepton/contexts/probe-lh-copy/external/Android/obb/com.uberspot.a2048/main.25.com.uberspot.a2048.obb" ]] \
+[[ "${rc}" == 0 && -f "${default_ctx}/external/Android/obb/com.uberspot.a2048/main.25.com.uberspot.a2048.obb" ]] \
     || fail "default context: exit ${rc}, obb not in its own context: $(cat "${STATE}/stderr")"
-[[ ! -e "${T}/home/.local/share/lepton/contexts/microemu-play" && ! -e "${MICROEMU_PLAY_CONTEXT}" ]] || fail "default context: obb copied into microemu-play"
+[[ ! -e "${default_ctx%/*}/microemu-play" && ! -e "${T}/home/.local/share/lepton/contexts/probe-lh-copy" && ! -e "${MICROEMU_PLAY_CONTEXT}" ]] \
+    || fail "default context: obb copied into microemu-play"
 reset
 make_apk "${a2048}" one com.uberspot.a2048 25
 mkdir -p "${MICROEMU_ANDROID_ROMS}/obb"
@@ -337,6 +424,10 @@ case_name="steamapps common Lepton named twice"
 named=$(grep -rl 'steamapps/common/Lepton' "${repo}/android/data" "${repo}/build" | sort | tr '\n' ' ')
 [[ "${named}" == "${repo}/android/data/usr/libexec/microemu/microemu-lepton ${repo}/android/data/usr/libexec/microemu/microemu-lepton-dir " ]] \
     || fail "steamapps/common/Lepton is named by: ${named}"
+
+case_name="no armada names"
+named=$(grep -rIl -i armada "${repo}/android/data" | sort | tr '\n' ' ')
+[[ -z "${named}" ]] || fail "armada named by: ${named}"
 
 case_name="prune with nothing stale"
 reset

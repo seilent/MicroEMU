@@ -294,12 +294,13 @@ Not installed. The pieces stay under `android/data/` with the paths they would i
 
 The `androidgames` system lists `.apk`, `.play` and `.update` files under `~/ROMs/androidgames/` and runs `/usr/libexec/microemu/microemu-apk
 <apk>`. Every Android game runs in one persistent Lepton context, `microemu-play`
-(`~/.local/share/lepton/contexts/microemu-play`), through `microemu-lepton`, which runs the reviewed Lepton runtime
+(`~/.local/share/microemu/android/home/.local/share/lepton/contexts/microemu-play`, under the Valve `HOME` Lepton
+runs with), through `microemu-lepton`, which runs the reviewed Lepton runtime
 (Lepton Runtime below). The container lives for one game: only a stopped container gives ES-DE focus back.
 
 `microemu-apk` exits 1 with a journal line outside the microemu session, when `microemu-lepton` is missing, for a file
-that is not an `.apk`, or for one outside `$HOME` and `/run/media/$USER` (the only host paths `microemu-lepton` mounts
-into the container). An `.update` entry runs `microemu-play-update --no-block` and returns. Otherwise it stops
+that is not an `.apk`, or for one outside `$HOME` and `/run/media/$USER` (the storage pick: the APK is read on the host
+and streams to the guest on stdin). An `.update` entry runs `microemu-play-update --no-block` and returns. Otherwise it stops
 `microemu-play-update.service`, removes a `lepton-headless-microemu-play` container left with that unit `inactive` or
 `failed` (`removed a leftover lepton-headless-microemu-play`), runs `microemu-game-free`, and runs itself in the
 `microemu-game` scope (`systemd-run --expand-environment=no`, as the RetroArch wrapper). There, with an EXIT trap that stops `microemu-play.service` (`--no-block` on a signal):
@@ -338,18 +339,29 @@ child:
 | environment | `TERM=dumb`, `APP_WANTS_FLATSCREEN=true`, `GAMESCOPE_WAYLAND_DISPLAY=gamescope-0`, `STEAM_COMPAT_DATA_PATH` the context (shared storage kept in `external/`), `LEPTON_NO_CLEANUP=true`, `LEPTON_KEEP_CONTEXT=1`, `MICROEMU_LEPTON_RUNTIME` the runtime, no `SteamAppId` or `LD_LIBRARY_PATH`; `internal/` created first |
 
 `MICROEMU_PLAY_NAME` (`microemu-play`, set in both units) is the context name Lepton starts, its dir
-`~/.local/share/lepton/contexts/<name>`, and the containers `lepton-<name>` and `lepton-headless-<name>`, in
+`~/.local/share/microemu/android/home/.local/share/lepton/contexts/<name>`, and the containers `lepton-<name>` and
+`lepton-headless-<name>`, in
 `microemu-play-run`, `microemu-play-stop`, the units' `podman rm`, `microemu-play-update`, `microemu-play-reset`,
 `microemu-gapps-install`, `microemu-apk`, `microemu-sideload`, `microemu-apk-watch`, `microemu-android-sync` and the
 `50-android` hook. A name outside `[a-z0-9][a-z0-9-]*`, or a `MICROEMU_PLAY_CONTEXT` whose last component is not the
 name, exits 1. The units set their own value, so another name through a unit needs a drop-in. The sideload state, the
 Google Play layer and the `.play` entries are the same for every name.
 
+A context left at the old path `~/.local/share/lepton/contexts/<name>` is moved to the one above by
+`microemu-context-move`, which `microemu-play-run`, `microemu-sideload` (`prepare` and `install`, before anything writes
+under the context) and `microemu-play-reset` run first, while neither `lepton-<name>` nor `lepton-headless-<name>` exists
+(`podman container exists`). With both paths present it logs `both paths exist`, uses the new one and deletes neither, so
+an image rollback finds its context where it was. A link at the old path, a `podman container exists` that fails, or an
+old and a new parent on different filesystems refuse with the move to make by hand. `microemu-play-reset` removes the old
+path too, so the next start does not move a half removed context back.
+
 Lepton's output before the boot goes to the journal, after it to `~/.local/share/microemu/android/lepton.log`. A
 `logcat -b main -b system -b crash` stream from the moment `logd` runs goes to `boot.log`, emptied at each start.
-While no `steam` process runs, a reader on `~/.steam/steam.pipe` logs each line Android writes there (`android asked to
-open <uri>`), so a writer never blocks. It opens the path only while it is a FIFO and without creating it, and stops
-when the FIFO is replaced or removed; with no such FIFO it is skipped. `lepton start exited with <rc>` goes to the
+While no `steam` process runs, a reader on `~/.local/share/microemu/android/home/.steam/steam.pipe` logs each line
+Android writes there (`android asked to open <uri>`), so a writer never blocks. `microemu-play-run` makes that parent
+dir and the FIFO at the start when nothing is there (a path the caller set with `MICROEMU_STEAM_PIPE` is not created).
+The reader opens the path only while it is a FIFO, and stops when the FIFO is replaced or removed; without a FIFO it is
+skipped. `lepton start exited with <rc>` goes to the
 journal and `lepton.log`; a stop request makes `microemu-play-run` wait for Lepton instead of dying first, and the read
 loop ends once Lepton is gone even when a descendant still holds its output open. Ready is Lepton's `Boot
 complete!` line with the container running and `sys.boot_completed` 1 (Lepton prints the line also when the container
@@ -386,11 +398,13 @@ effect on Android 11 and are left out: `sensor_privacy`, `send_security_reports`
 Sideloads (`microemu-sideload install`), with per package state in `~/.local/share/microemu/android/sideload/<pkg>`:
 
 - Package name and version code from Lepton's `apk-info-extractor`, cached by path, size and mtime.
-- Installed with `cmd_real package install -r -g` (a split set, `base.apk` with `.armada-apks`, as an install session),
-  then `appops set <pkg> MANAGE_EXTERNAL_STORAGE allow` and a `speed` compile. Reinstalled when the sha256 of
-  its files changes, data kept.
+- Installed on stdin through `/system/bin/cmd`: `cmd package install -r -g -S <size>` for one file, and for a split set
+  `install-create -r -g`, `install-write -S <size>` per file and `install-commit`, with `install-abandon` after a failed
+  write. A split set is a folder with a `base.apk` and every other `*.apk` beside it; a `base.apk` in the ROMs root is
+  installed alone. Then `cmd appops set <pkg> MANAGE_EXTERNAL_STORAGE allow` and a `speed` compile. Reinstalled when the
+  sha256 of its files changes, data kept.
 - Refused: an older version code than installed, a package installed from Play (`installer` in `packages.xml`, or
-  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`), a bad split list.
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`).
 - A package whose file is gone is marked `stale`, never uninstalled; a file moved with the same content only updates
   the path. Nothing is marked when `~/ROMs/androidgames` is missing, empty or a link to an absent target.
   `microemu-android-prune [<pkg>...]` queues stale packages; the next `.apk` launch uninstalls the ones still stale, and
@@ -432,6 +446,11 @@ through a temp file, so a reader never sees a half written path. Exit 1 when the
 cannot supply one (`Lepton is not installed. Install it in Steam.`, or the refusal for an unreviewed build) and for any
 other verb than `runtime` and `start`.
 
+For that first case only, `microemu-play-run` also writes an empty
+`~/.local/state/microemu/lepton-install-requested` (`$XDG_STATE_HOME`). MicroOS's Steam session hook reads the flag's
+existence at Steam's next start and hands Steam `steam://install/3029110`; the file's content is never read by anyone,
+and no other refusal writes it. The hook removes the flag once it acted on it; MicroEMU never removes it.
+
 `microemu-play-run` calls `microemu-lepton runtime` once per start and exports `MICROEMU_LEPTON_RUNTIME`; it reads the
 odm `build.prop`, the stamp (`version.txt`, `images/version.txt`) and every other Lepton file from that dir. A refusal
 there is written as the runtime command's last line, without its `microemu-lepton:` prefix, to
@@ -457,7 +476,8 @@ block is Valve's v3.0.5, build 25772114. A buildid with no block is refused as a
 `microemu-lepton start <context>` runs the runtime through a view made for each start,
 `$XDG_RUNTIME_DIR/microemu/lepton/tool.<random>/`, whose `lepton` links to the runtime's and `liblepton/liblepton.sh` to
 `microemu-liblepton.sh`. The start holds a shared `flock` on its view for as long as Lepton runs, and removes the views
-no one holds. Lepton gets only `HOME` (`~/.local/share/microemu/android/home`, `.steam/steam.pipe` made as a FIFO),
+no one holds. Lepton gets only `HOME` (`$MICROEMU_ANDROID_DATA/home`, `~/.local/share/microemu/android/home` by
+default, `.steam/steam.pipe` made as a FIFO there),
 `PATH`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `DBUS_SESSION_BUS_ADDRESS`, `TERM=dumb`,
 `STEAM_COMPAT_CLIENT_INSTALL_PATH=/usr/share/microemu/android/steam-empty` (an empty dir), `LEPTON_NO_CLEANUP=true`,
 `LEPTON_KEEP_CONTEXT=1`, `MICROEMU_LEPTON_RUNTIME`, `MICROEMU_LEPTON_REVIEWED`, and when set `APP_WANTS_FLATSCREEN`,
@@ -580,8 +600,8 @@ from `/usr/share/microemu/android/display`, output in `~/.local/share/microemu/a
 up to 10 s for the `<X display> <wayland socket>` line gamescope writes to `ready` (`headless gamescope did not start`,
 exit 1, otherwise), then runs `microemu-play-run --headless` with `GAMESCOPE_WAYLAND_DISPLAY=microemu/headless/<socket>`:
 the same context and mounts minus microemu's pad nodes, Lepton context name `headless-microemu-play` (container
-`lepton-headless-microemu-play`, `lepton.headless=true`, no window), `ARMADA_EXT_WAYLAND_DISPLAY=` (no second display),
-no `systemd-notify`. The guest composer is on that gamescope, not the session's.
+`lepton-headless-microemu-play`, `lepton.headless=true`, no window), no `systemd-notify`. The guest composer is on that
+gamescope, not the session's.
 `microemu-play-run --headless` refuses without a socket at `$XDG_RUNTIME_DIR/<dir>/<socket>`; either mode refuses while
 the other mode's container exists. The gamescope is stopped and the dir removed on every exit, and again by
 `ExecStopPost=`. After `sys.boot_completed` is `1`, every 10 s the unit reads the versionCodes of

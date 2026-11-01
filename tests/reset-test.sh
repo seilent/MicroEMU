@@ -124,12 +124,20 @@ mkdir -p "${real}/keep"
 run
 [[ "${rc}" == 0 && ! -e "${MICROEMU_PLAY_CONTEXT}" && -d "${real}/keep" ]] || fail "named: exit ${rc}, not only its own context removed: $(cat "${STATE}/out")"
 reset inactive
-rm -rf "${T:?}/home"
-mkdir -p "${T}/home/.local/share/lepton/contexts/probe-lh-copy" "${T}/home/.local/share/lepton/contexts/microemu-play"
+rm -rf "${T:?}/home" "${MICROEMU_ANDROID_DATA:?}/home"
+default_ctx="${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts"
+mkdir -p "${default_ctx}/probe-lh-copy" "${default_ctx}/microemu-play" "${T}/home/.local/share/lepton/contexts/probe-lh-copy"
 rc=0
 env -u MICROEMU_PLAY_CONTEXT HOME="${T}/home" "${reset_cmd}" > "${STATE}/out" 2>&1 || rc=$?
-[[ "${rc}" == 0 && ! -e "${T}/home/.local/share/lepton/contexts/probe-lh-copy" && -d "${T}/home/.local/share/lepton/contexts/microemu-play" ]] \
-    || fail "named, default context: exit ${rc}: $(ls "${T}/home/.local/share/lepton/contexts"): $(cat "${STATE}/out")"
+[[ "${rc}" == 0 && ! -e "${default_ctx}/probe-lh-copy" && -d "${default_ctx}/microemu-play" && ! -e "${T}/home/.local/share/lepton/contexts/probe-lh-copy" ]] \
+    || fail "named, default context: exit ${rc}: $(ls "${default_ctx}" 2>/dev/null): $(ls "${T}/home/.local/share/lepton/contexts" 2>/dev/null): $(cat "${STATE}/out")"
+reset inactive
+rm -rf "${T:?}/home" "${MICROEMU_ANDROID_DATA:?}/home"
+mkdir -p "${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/microemu-play/internal" "${T}/home/.local/share/lepton/contexts/microemu-play/internal"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT -u MICROEMU_PLAY_NAME HOME="${T}/home" "${reset_cmd}" > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 && ! -e "${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/microemu-play" && ! -e "${T}/home/.local/share/lepton/contexts/microemu-play" ]] \
+    || fail "unnamed, both paths: exit ${rc}: $(cat "${STATE}/out")"
 for container in lepton-probe-lh-copy lepton-headless-probe-lh-copy; do
     reset inactive
     : > "${STATE}/container-${container}"

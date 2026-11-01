@@ -37,7 +37,7 @@ if [[ "${1:-}" != --body ]]; then
     real=$(realpath -e "$1")
     case "${real}" in
         "${HOME%/}/"*|"/run/media/${USER:-$(id -un)}/"*) ;;
-        *) refuse "${real} is outside ${HOME} and /run/media/${USER:-$(id -un)}, the only paths the Android container sees" ;;
+        *) refuse "${real} is outside ${HOME} and /run/media/${USER:-$(id -un)}" ;;
     esac
     systemctl --user stop microemu-play-update.service >/dev/null 2>&1 || true
     systemctl --user reset-failed microemu-play-update.service >/dev/null 2>&1 || true

@@ -3,9 +3,11 @@ set -u
 
 PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 [[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-play-reset: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
-[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-play-reset: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${PLAY_NAME}}"
+[[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-play-reset: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
+OLD_CONTEXT=
+[[ -n "${MICROEMU_PLAY_CONTEXT:-}" ]] || OLD_CONTEXT="${HOME}/.local/share/lepton/contexts/${PLAY_NAME}"
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
 
@@ -42,10 +44,11 @@ done <<< "${users}"
 leptons=$(podman ps -a --filter label=lepton=true --format '{{.Names}}') || fail "podman ps failed, refusing"
 [[ -z "${leptons}" ]] || fail "Lepton containers exist (${leptons//$'\n'/ }), ${DATA}/sideload, ${DATA}/prune and ${GAPPS} are shared, refusing"
 
-if [[ -d "${CONTEXT}" ]]; then
-    podman unshare chmod -R 700 "${CONTEXT}" || fail "cannot chmod ${CONTEXT}"
-    podman unshare rm -rf "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
-fi
+for context in "${CONTEXT}" "${OLD_CONTEXT}"; do
+    [[ -n "${context}" && -d "${context}" ]] || continue
+    podman unshare chmod -R 700 "${context}" || fail "cannot chmod ${context}"
+    podman unshare rm -rf "${context}" || fail "cannot remove ${context}"
+done
 rm -rf "${DATA}/sideload" "${DATA}/prune"
 if (( gapps )); then
     if [[ -e "${GAPPS}" ]]; then

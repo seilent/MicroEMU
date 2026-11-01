@@ -1886,6 +1886,43 @@ for dir in images/rootfs sysbake; do
 done
 rm -rf "${T}/snaps-links" "${T}/outside-rootfs" "${T}/outside-sysbake"
 
+play_run="${repo}/android/data/usr/libexec/microemu/microemu-play-run"
+play_data="${T}/play-data"
+play_home="${play_data}/home"
+play_ctx="${play_home}/.local/share/lepton/contexts/microemu-play"
+mkdir -p "${T}/play-bin" "${play_data}"
+cat > "${T}/play-bin/pad-nodes" <<'STUB'
+#!/usr/bin/bash
+exit 0
+STUB
+cat > "${T}/play-bin/lepton-dir" <<STUB
+#!/usr/bin/bash
+printf '%s\n' "${rt}"
+STUB
+chmod 0755 "${T}/play-bin/"*
+cat > "${STATE}/after-run" <<STUB
+#!/usr/bin/bash
+podman stop -t 0 lepton-microemu-play
+STUB
+chmod 0755 "${STATE}/after-run"
+rc=0
+XDG_STATE_HOME="${T}/play-state" MICROEMU_ANDROID_DATA="${play_data}" MICROEMU_PLAY_POLL_S=0.05 \
+    MICROEMU_DISPLAY_FILE="${repo}/android/data/usr/share/microemu/android/display" \
+    MICROEMU_GAPPS="${T}/play-gapps" MICROEMU_STUB_DIR="${T}/play-stub" \
+    MICROEMU_ANDROID_OPTS="${repo}/android/data/usr/share/microemu/android/opts" \
+    MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move" \
+    MICROEMU_LEPTON_DIR_CMD="${T}/play-bin/lepton-dir" MICROEMU_LEPTON="${launcher}" \
+    MICROEMU_PAD_NODES="${T}/play-bin/pad-nodes" \
+    STEAM_COMPAT_DATA_PATH="${play_ctx}" \
+    timeout -k 2 20 "${play_run}" > "${STATE}/out-play-run" 2>&1 || rc=$?
+grep -qx "STEAM_COMPAT_DATA_PATH=${play_ctx}" "${STATE}/env-microemu-play" \
+    || fail "play-run on the real launcher: the launcher refused the context: $(tail -n 5 "${STATE}/out-play-run")"
+grep -q "microemu-lepton: kept ${play_data}/backups/microemu-play.pre-" "${STATE}/out-play-run" \
+    || fail "play-run on the real launcher: the launcher did not reach its start path: $(tail -n 5 "${STATE}/out-play-run")"
+[[ -d "${play_ctx}/internal" ]] || fail "play-run on the real launcher: internal/ not made"
+[[ -p "${play_home}/.steam/steam.pipe" ]] || fail "play-run on the real launcher: the FIFO not made under the DATA home"
+rm -rf "${play_data:?}" "${T:?}/play-bin" "${T:?}/play-state"
+
 if (( failures )); then
     echo "lepton-test: ${failures} failure(s)" >&2
     exit 1

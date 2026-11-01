@@ -12,6 +12,7 @@ trap 'rm -rf "${T}"' EXIT
 mkdir -p "${T}/bin"
 export STATE="${T}/state"
 export MICROEMU_PLAY_RUN="${T}/bin/play-run"
+export MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move"
 export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
 export MICROEMU_GAPPS="${T}/gapps"
 export MICROEMU_PLAY_UPDATE_POLL_S=0.1
@@ -25,7 +26,7 @@ export MICROEMU_ANDROID_DATA="${T}/data/android"
 headless_dir="${MICROEMU_RUNTIME_DIR}/headless"
 clear_marker="${MICROEMU_RUNTIME_DIR}/play-update-clear"
 setup_marker="${MICROEMU_RUNTIME_DIR}/play-update-setup"
-packages="${MICROEMU_PLAY_CONTEXT}/baked/data_overlay/system/packages.xml"
+packages="${MICROEMU_PLAY_CONTEXT:-${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/microemu-play}/baked/data_overlay/system/packages.xml"
 
 cat > "${T}/dumpsys-sample" <<'STUB'
 dumpsys_sample() {
@@ -71,7 +72,7 @@ cat > "${T}/bin/play-run" <<'STUB'
 echo "play-run $* display=${GAMESCOPE_WAYLAND_DISPLAY:-unset} XDG=${XDG_RUNTIME_DIR}" >> "${STATE}/calls"
 . "${T_DUMPSYS_SAMPLE}"
 echo "play-run $*" >> "${STATE}/calls"
-packages="${MICROEMU_PLAY_CONTEXT}/baked/data_overlay/system/packages.xml"
+packages="${MICROEMU_PLAY_CONTEXT:-${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/microemu-play}/baked/data_overlay/system/packages.xml"
 while IFS= read -r step; do
     case "${step}" in
         sleep*) sleep "${step#sleep }" ;;
@@ -201,6 +202,23 @@ MICROEMU_PLAY_UPDATE_BOUND_S=1 body
 has "play services update not done after 0 min (GMS 263737022, Play 83662520)"
 called "podman stop -t 5 lepton-headless-microemu-play"
 (( took < 4000 )) || fail "${case_name}: took ${took} ms"
+
+case_name="old context moved first"
+reset "write 263737022 85343420"
+: > "${STATE}/no_container"
+old_context="${T}/old/home/.local/share/lepton/contexts/microemu-play"
+old_moved="${T}/old/data/home/.local/share/lepton/contexts/microemu-play"
+mkdir -p "${old_context}/baked/data_overlay/system"
+printf '<packages>\n<package name="com.google.android.gms" version="204516046" />\n<package name="com.android.vending" version="83662520" />\n</packages>\n' \
+    > "${old_context}/baked/data_overlay/system/packages.xml"
+rc=0
+env -u MICROEMU_PLAY_CONTEXT HOME="${T}/old/home" MICROEMU_ANDROID_DATA="${T}/old/data" MICROEMU_PLAY_UPDATE_BOUND_S=1 \
+    "${update}" --body 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
+has "starting android headless, waiting for GMS above 204516046 and Play above 83662520, at most 0 min"
+has "GMS 204516046 to 263737022"
+[[ ! -e "${old_context}" && -f "${old_moved}/baked/data_overlay/system/packages.xml" ]] || fail "${case_name}: the context was not moved before the first read"
+rm -rf "${T:?}/old"
 
 case_name="play only"
 reset "write 204516046 85343420"
@@ -493,10 +511,11 @@ MICROEMU_PLAY_NAME=probe-lh-copy run
     || fail "${case_name}: on the microemu-play context: exit ${rc}: $(cat "${STATE}/stderr")"
 [[ ! -s "${STATE}/calls" ]] || fail "${case_name}: on the microemu-play context: $(cat "${STATE}/calls")"
 reset ""
-echo "lepton-other ${T}/home/.local/share/lepton/contexts/probe-lh-copy" > "${STATE}/users"
+default_ctx="${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts/probe-lh-copy"
+echo "lepton-other ${default_ctx}" > "${STATE}/users"
 rc=0
 env -u MICROEMU_PLAY_CONTEXT HOME="${T}/home" MICROEMU_PLAY_NAME=probe-lh-copy "${update}" 2> "${STATE}/stderr" || rc=$?
-[[ "${rc}" == 1 ]] && grep -qx "container lepton-other uses ${T}/home/.local/share/lepton/contexts/probe-lh-copy, refusing" "${STATE}/log" \
+[[ "${rc}" == 1 ]] && grep -qx "container lepton-other uses ${default_ctx}, refusing" "${STATE}/log" \
     || fail "${case_name}: default context: exit ${rc}: $(cat "${STATE}/log" "${STATE}/stderr")"
 reset ""
 MICROEMU_PLAY_NAME=Bad run

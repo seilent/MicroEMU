@@ -6,7 +6,9 @@ PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 UNIT=microemu-play-update.service
 CONTAINER=lepton-headless-${PLAY_NAME}
 PLAY_RUN="${MICROEMU_PLAY_RUN:-/usr/libexec/microemu/microemu-play-run}"
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
+CONTEXT_MOVE="${MICROEMU_CONTEXT_MOVE:-/usr/libexec/microemu/microemu-context-move}"
+DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${PLAY_NAME}}"
 [[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-play-update: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 PACKAGES="${CONTEXT}/baked/data_overlay/system/packages.xml"
@@ -17,7 +19,6 @@ BOOT="${CLEAR%/*}/play-update-boot"
 HEADLESS="${CLEAR%/*}/headless"
 GAMESCOPE="${MICROEMU_GAMESCOPE:-/usr/bin/gamescope}"
 DISPLAY_FILE="${MICROEMU_DISPLAY_FILE:-/usr/share/microemu/android/display}"
-DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
 READY_S="${MICROEMU_HEADLESS_WAIT_S:-10}"
 BOUND_S="${MICROEMU_PLAY_UPDATE_BOUND_S:-1200}"
 POLL_S="${MICROEMU_PLAY_UPDATE_POLL_S:-10}"
@@ -250,8 +251,16 @@ interrupted() {
     exit 2
 }
 
+move_context() {
+    local out rc=0
+    [[ -x "${CONTEXT_MOVE}" ]] || { log "${CONTEXT_MOVE} missing"; exit 1; }
+    out=$("${CONTEXT_MOVE}" 2>&1) || rc=$?
+    (( ! rc )) || { log "${out:-${CONTEXT_MOVE} failed (rc=${rc})}"; exit 1; }
+    [[ -z "${out}" ]] || log "${out}"
+}
+
 body() {
-    local start=$(( ${EPOCHREALTIME/./} / 1000 )) gms=0 vending=0 seen_gms=0 seen_vending=0 next_report now sleep_pid clear=0 setup=0 changed='' active=0 sessions busy_at=0 session_seen=0 gms_session=0 start_gms booted=0 boot_at=0 rc dex2oat=0 dex_logged=0
+    local start=$(( ${EPOCHREALTIME/./} / 1000 )) gms=0 vending=0 seen_gms=0 seen_vending=0 next_report now sleep_pid clear=0 setup=0 changed_at=0 active=0 sessions busy_at=0 session_seen=0 gms_session=0 start_gms booted=0 boot_at=0 rc dex2oat=0 dex_logged=0
     stopping=0
     run_pid=
     gamescope_pid=
@@ -266,6 +275,7 @@ body() {
         inactive|failed|"") ;;
         *) log "microemu-play.service is running, refusing"; exit 1 ;;
     esac
+    move_context
     if read -r gms vending < <(versions); then
         seen_gms=${gms}
         seen_vending=${vending}
@@ -305,11 +315,11 @@ body() {
         if (( booted )) && read -r gms vending < <(versions); then
             if (( seen_gms && gms != seen_gms )); then
                 log "GMS ${seen_gms} to ${gms}"
-                changed=${now}
+                changed_at=${now}
             fi
             if (( seen_vending && vending != seen_vending )); then
                 log "Play ${seen_vending} to ${vending}"
-                changed=${now}
+                changed_at=${now}
             fi
             seen_gms=${gms}
             seen_vending=${vending}
@@ -349,10 +359,10 @@ body() {
         if (( setup && ! dex2oat )) && (( seen_gms > GMS_TREE && seen_vending > VENDING_TREE )); then
             done_finish "done in $(( (now - start) / 60000 )) min $(( (now - start) / 1000 % 60 )) s: GMS ${seen_gms}, Play ${seen_vending}"
         fi
-        if (( ! setup && ! active && ! dex2oat )) && [[ -n "${changed}" ]] && (( now - (changed > busy_at ? changed : busy_at) >= SETTLE_S * 1000 )); then
+        if (( ! setup && ! active && ! dex2oat )) && (( changed_at )) && (( now - (changed_at > busy_at ? changed_at : busy_at) >= SETTLE_S * 1000 )); then
             maintenance_finish "done in $(( (now - start) / 60000 )) min $(( (now - start) / 1000 % 60 )) s: GMS ${seen_gms}, Play ${seen_vending}" 1
         fi
-        if (( booted && ! setup && ! active && ! dex2oat )) && [[ -z "${changed}" ]] && (( now - boot_at >= QUIET_S * 1000 )); then
+        if (( booted && ! setup && ! active && ! dex2oat )) && (( ! changed_at )) && (( now - boot_at >= QUIET_S * 1000 )); then
             maintenance_finish "already current after $(( QUIET_S / 60 )) min: GMS ${seen_gms}, Play ${seen_vending}" 1
         fi
         if (( now - start >= BOUND_S * 1000 )); then

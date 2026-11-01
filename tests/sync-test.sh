@@ -248,8 +248,9 @@ rc=0
 MICROEMU_PLAY_NAME=Bad "${sync}" 2> "${T}/err" || rc=$?
 [[ "${rc}" == 1 && "$(cat "${T}/err")" == "microemu-android-sync: bad MICROEMU_PLAY_NAME Bad" ]] || fail "bad name: exit ${rc}: $(cat "${T}/err")"
 fixture
-mkdir -p "${T}/home/.local/share/lepton/contexts"
-mv "${MICROEMU_PLAY_CONTEXT}" "${T}/home/.local/share/lepton/contexts/probe-lh-copy"
+default_ctx="${MICROEMU_ANDROID_DATA}/home/.local/share/lepton/contexts"
+mkdir -p "${default_ctx}"
+mv "${MICROEMU_PLAY_CONTEXT}" "${default_ctx}/probe-lh-copy"
 rc=0
 env -u MICROEMU_PLAY_CONTEXT MICROEMU_PLAY_NAME=probe-lh-copy HOME="${T}/home" "${sync}" 2> "${T}/err" || rc=$?
 [[ "${rc}" == 0 && "$(cat "${MICROEMU_ANDROID_ROMS}/Play Game Deluxe Edition.play" 2>/dev/null)" == com.example.playgame ]] \

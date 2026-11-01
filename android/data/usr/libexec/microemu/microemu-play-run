@@ -3,21 +3,24 @@ set -uo pipefail
 
 LEPTON="${MICROEMU_LEPTON:-/usr/libexec/microemu/microemu-lepton}"
 LEPTON_RUNTIME_CMD="${MICROEMU_LEPTON_DIR_CMD:-/usr/libexec/microemu/microemu-lepton}"
+CONTEXT_MOVE="${MICROEMU_CONTEXT_MOVE:-/usr/libexec/microemu/microemu-context-move}"
 PAD_NODES="${MICROEMU_PAD_NODES:-/usr/libexec/microemu/microemu-pad-nodes}"
 RUN="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/lepton"
 DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
+STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}"
 EXTEND_USEC="${MICROEMU_PLAY_EXTEND_USEC:-120000000}"
 POLL_S="${MICROEMU_PLAY_POLL_S:-0.5}"
-STEAM_PIPE="${MICROEMU_STEAM_PIPE:-${HOME}/.steam/steam.pipe}"
+STEAM_PIPE="${MICROEMU_STEAM_PIPE:-${DATA}/home/.steam/steam.pipe}"
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 STUB_DIR="${MICROEMU_STUB_DIR:-/usr/share/microemu/android}"
 DISPLAY_FILE="${MICROEMU_DISPLAY_FILE:-/usr/share/microemu/android/display}"
 OPTS="${MICROEMU_ANDROID_OPTS:-/usr/share/microemu/android/opts}"
 OPTS_TIMEOUT_S="${MICROEMU_ANDROID_OPTS_TIMEOUT_S:-30}"
 GMS_GRANTS="android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION android.permission.ACCESS_BACKGROUND_LOCATION android.permission.READ_CONTACTS android.permission.WRITE_CONTACTS"
+LEPTON_NOT_INSTALLED="Lepton is not installed. Install it in Steam."
 PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 [[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-play-run: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
-CONTEXT="${MICROEMU_PLAY_CONTEXT:-${HOME}/.local/share/lepton/contexts/${PLAY_NAME}}"
+CONTEXT="${MICROEMU_PLAY_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${PLAY_NAME}}"
 [[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-play-run: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 NAME=${PLAY_NAME}
 case "${1:-}" in
@@ -39,8 +42,22 @@ fail() {
     exit 1
 }
 
+request_install() {
+    mkdir -p "${STATE_DIR}/microemu" && : > "${STATE_DIR}/microemu/lepton-install-requested"
+}
+
 container_running() {
     [[ "$(podman container inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" == true ]]
+}
+
+move_context() {
+    local out rc=0
+    [[ -x "${CONTEXT_MOVE}" ]] || fail "${CONTEXT_MOVE} missing"
+    out=$("${CONTEXT_MOVE}" 2>&1) || rc=$?
+    if (( rc )); then
+        fail "${out:-${CONTEXT_MOVE} failed (rc=${rc})}"
+    fi
+    [[ -z "${out}" ]] || say "${out}"
 }
 
 boot_completed() {
@@ -215,12 +232,19 @@ density=$(sed -n 's/^density=//p' "${DISPLAY_FILE}" 2>/dev/null | head -n 1)
 [[ "${density}" =~ ^[0-9]+$ ]] || fail "no density in ${DISPLAY_FILE}"
 [[ -x "${LEPTON}" ]] || fail "${LEPTON} missing"
 lepton_err=$(mktemp) || fail "cannot make a temp file"
-lepton_runtime=$("${LEPTON_RUNTIME_CMD}" runtime 2> "${lepton_err}") \
-    || fail "$(grep -v '^$' "${lepton_err}" | sed -n '$p' | sed 's/^microemu-lepton: //')"
+rc=0
+lepton_runtime=$("${LEPTON_RUNTIME_CMD}" runtime 2> "${lepton_err}") || rc=$?
+if (( rc )); then
+    reason=$(grep -v '^$' "${lepton_err}" | sed -n '$p' | sed 's/^microemu-lepton: //')
+    rm -f "${lepton_err}"
+    [[ "${reason}" != "${LEPTON_NOT_INSTALLED}" ]] || request_install
+    fail "${reason}"
+fi
 rm -f "${lepton_err}"
 odm_source="${lepton_runtime}/images/rootfs/vendor/odm/etc/build.prop"
 [[ -f "${odm_source}" ]] || fail "${odm_source} missing"
 
+move_context
 mkdir -p "${RUN}" "${DATA}" "${CONTEXT}/internal"
 
 {
@@ -276,7 +300,6 @@ fi
 
 unset SteamAppId LD_LIBRARY_PATH
 export TERM=dumb APP_WANTS_FLATSCREEN=true GAMESCOPE_WAYLAND_DISPLAY="${display}"
-[[ "${NAME}" != headless-* ]] || export ARMADA_EXT_WAYLAND_DISPLAY=
 export STEAM_COMPAT_DATA_PATH="${CONTEXT}" LEPTON_NO_CLEANUP=true LEPTON_KEEP_CONTEXT=1 MICROEMU_LEPTON_RUNTIME="${lepton_runtime}"
 export CONTAINERS_CONF_OVERRIDE="${RUN}/containers.conf"
 
@@ -286,6 +309,9 @@ mkfifo "${RUN}/lepton.out"
 boot_log &
 boot_log_pid=$!
 steam_pipe_pid=
+if [[ -z "${MICROEMU_STEAM_PIPE:-}" ]]; then
+    mkdir -p "${STEAM_PIPE%/*}" && { [[ -e "${STEAM_PIPE}" || -L "${STEAM_PIPE}" ]] || mkfifo "${STEAM_PIPE}"; }
+fi
 if [[ -p "${STEAM_PIPE}" ]]; then
     steam_pipe &
     steam_pipe_pid=$!
