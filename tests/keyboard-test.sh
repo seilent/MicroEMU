@@ -3,14 +3,14 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-script="${repo}/android/data/usr/bin/microemu-keyboard-install"
+script="${repo}/data/usr/bin/microemu-keyboard-install"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
 mkdir -p "${T}/bin"
 export STATE="${T}/state"
 export XDG_CACHE_HOME="${T}/cache"
-export MICROEMU_FETCH="${repo}/android/data/usr/bin/microemu-fetch"
+export MICROEMU_FETCH="${repo}/data/usr/bin/microemu-fetch"
 export MICROEMU_KEYBOARD_POLL_S=0.01
 apk="${T}/apk"
 printf 'simple keyboard %s\n' 149 > "${apk}"

@@ -7,7 +7,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-install_cmd="${repo}/android/data/usr/bin/microemu-gapps-install"
+install_cmd="${repo}/data/usr/bin/microemu-gapps-install"
 
 T=$(mktemp -d)
 trap 'chmod -R u+w "${T}" 2>/dev/null; rm -rf "${T}"' EXIT
@@ -17,8 +17,12 @@ export STATE="${T}/state"
 export MICROEMU_GAPPS="${T}/gapps"
 export MICROEMU_GAPPS_CACHE="${T}/cache"
 export MICROEMU_ANDROID_ROMS="${T}/roms"
+export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
+export MICROEMU_ANDROID_ROMS_CMD="${repo}/data/usr/libexec/microemu/microemu-android-roms"
+export HOME="${T}/home"
+mkdir -p "${HOME}"
 export MICROEMU_PLAY_UPDATE="${T}/bin/update"
-export MICROEMU_FETCH="${repo}/android/data/usr/bin/microemu-fetch"
+export MICROEMU_FETCH="${repo}/data/usr/bin/microemu-fetch"
 set_dir="${MICROEMU_GAPPS}/mtg11-20230922.vending-36.6.25"
 
 echo gsf > "${T}/zip11/system/system_ext/priv-app/GoogleServicesFramework/GoogleServicesFramework.apk"
@@ -117,7 +121,7 @@ fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 reset() {
     [[ ! -d "${MICROEMU_GAPPS}" ]] || chmod -R u+w "${MICROEMU_GAPPS}"
-    rm -rf "${STATE}" "${MICROEMU_GAPPS}" "${MICROEMU_GAPPS_CACHE}" "${MICROEMU_ANDROID_ROMS}"
+    rm -rf "${STATE}" "${MICROEMU_GAPPS}" "${MICROEMU_GAPPS_CACHE}" "${MICROEMU_ANDROID_ROMS:-${T}/roms}"
     mkdir -p "${STATE}"
     : > "${STATE}/curl"
     echo inactive > "${STATE}/unit"
@@ -148,7 +152,7 @@ grep -q 'com.google.android.gms' "${set_dir}/system/product/etc/permissions/priv
 [[ -z "$(ls -A "${MICROEMU_GAPPS_CACHE}")" ]] || fail "zips not deleted: $(ls -A "${MICROEMU_GAPPS_CACHE}")"
 [[ "$(cat "${MICROEMU_ANDROID_ROMS}/Google Play.play")" == com.android.vending ]] || fail "Google Play.play not written"
 [[ -f "${MICROEMU_ANDROID_ROMS}/Update Google Play.update" ]] || fail "Update Google Play.update not written"
-[[ -e "${MICROEMU_GAPPS}/update-entry" ]] || fail "update entry marker not written"
+[[ "$(cat "${MICROEMU_GAPPS}/update-entry")" == "$(realpath -e -- "${MICROEMU_ANDROID_ROMS}")" ]] || fail "update entry marker: $(cat "${MICROEMU_GAPPS}/update-entry" 2>/dev/null)"
 [[ "$(cat "${STATE}/update")" == "update --setup" ]] || fail "update not run once in the foreground after current: $(cat "${STATE}/update")"
 [[ "$(grep -c -- '--proto =https --proto-redir =https' "${STATE}/curl")" == 2 ]] || fail "curl not https only: $(cat "${STATE}/curl")"
 stamp_mtime=$(stat -c %Y "${set_dir}/STAMP")
@@ -249,6 +253,41 @@ reset
 MICROEMU_TEST='' run
 [[ "${rc}" == 1 ]] || fail "overrides without MICROEMU_TEST: exit ${rc}"
 grep -q "size differs from 194494611" "${STATE}/out" || fail "overrides honored without MICROEMU_TEST: $(cat "${STATE}/out")"
+
+reset
+card="${T}/card/ROMs/androidgames"
+mkdir -p "${card}" "${MICROEMU_RUNTIME_DIR}"
+printf '%s\n' layout=names "root=$(findmnt -rno TARGET -T "${T}/card")" "roms=${T}/card/ROMs" \
+    > "${MICROEMU_RUNTIME_DIR}/paths"
+unset MICROEMU_ANDROID_ROMS
+rm -f "${MICROEMU_GAPPS}/update-entry"
+run
+[[ "${rc}" == 0 ]] || fail "card folder: exit ${rc}: $(cat "${STATE}/out")"
+[[ -f "${card}/Google Play.play" && -f "${card}/Update Google Play.update" ]] || fail "card folder: the entries went elsewhere: $(ls "${HOME}/ROMs/androidgames" 2>/dev/null)"
+[[ "$(cat "${MICROEMU_GAPPS}/update-entry")" == "$(realpath -e -- "${card}")" ]] || fail "card folder: marker $(cat "${MICROEMU_GAPPS}/update-entry")"
+rm -f "${card}/Update Google Play.update"
+run
+[[ ! -e "${card}/Update Google Play.update" ]] || fail "card folder: a deletion in a folder in the set did not stick"
+
+reset
+mkdir -p "${MICROEMU_GAPPS}/set"
+ln -s set "${MICROEMU_GAPPS}/current"
+: > "${MICROEMU_GAPPS}/update-entry"
+home="${T}/old-home"
+mkdir -p "${home}/ROMs/androidgames"
+rm -f "${MICROEMU_RUNTIME_DIR}/paths"
+HOME="${home}" run
+[[ "${rc}" == 0 ]] || fail "old empty marker: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${home}/ROMs/androidgames/Update Google Play.update" ]] || fail "old empty marker: the entry was written for ~/ROMs/androidgames"
+[[ "$(head -n 1 "${MICROEMU_GAPPS}/update-entry")" == "$(realpath -m -- "${home}/ROMs/androidgames")" ]] || fail "old empty marker: $(cat "${MICROEMU_GAPPS}/update-entry")"
+
+export MICROEMU_ANDROID_ROMS="${T}/roms"
+reset
+mkdir -p "${MICROEMU_ANDROID_ROMS}"
+: > "${MICROEMU_ANDROID_ROMS}/Mine.update"
+run
+[[ -f "${MICROEMU_ANDROID_ROMS}/Google Play.play" ]] || fail "existing .update: Google Play.play not written"
+[[ ! -e "${MICROEMU_ANDROID_ROMS}/Update Google Play.update" ]] || fail "existing .update: a second .update written"
 
 if (( failures )); then
     echo "gapps-install-test: ${failures} failure(s)" >&2

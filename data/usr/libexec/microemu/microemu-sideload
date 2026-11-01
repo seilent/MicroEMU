@@ -9,7 +9,8 @@ DATA="${MICROEMU_ANDROID_DATA:-${HOME}/.local/share/microemu/android}"
 CONTEXT="${MICROEMU_PLAY_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${PLAY_NAME}}"
 [[ "${CONTEXT##*/}" == "${PLAY_NAME}" ]] || { echo "microemu-sideload: ${CONTEXT} is not a ${PLAY_NAME} context, refusing" >&2; exit 1; }
 CACHE="${MICROEMU_ANDROID_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/android}"
-ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
+ROMS_CMD="${MICROEMU_ANDROID_ROMS_CMD:-/usr/libexec/microemu/microemu-android-roms}"
+ROMS="${MICROEMU_ANDROID_ROMS:-}"
 CONTAINER=lepton-${PLAY_NAME}
 STATES="${DATA}/sideload"
 QUEUE="${DATA}/prune"
@@ -26,6 +27,13 @@ fail() {
 }
 
 guest() { podman exec "${CONTAINER}" "$@"; }
+
+android_roms() {
+    local out
+    [[ -n "${ROMS}" ]] && return 0
+    out=$("${ROMS_CMD}") || fail "cannot read the Android folder"
+    ROMS=${out}
+}
 
 guest_i() { podman exec -i "${CONTAINER}" "$@"; }
 
@@ -257,8 +265,8 @@ install() {
 }
 
 case "${1:-}" in
-    prepare) [[ -n "${2:-}" ]] || exit 1; move_context; prepare "$2" ;;
-    install) [[ -n "${2:-}" ]] || exit 1; move_context; install "$2" ;;
+    prepare) [[ -n "${2:-}" ]] || exit 1; move_context; android_roms; prepare "$2" ;;
+    install) [[ -n "${2:-}" ]] || exit 1; move_context; android_roms; install "$2" ;;
     installed) [[ -n "${2:-}" ]] || exit 1; installed "$2" ;;
     *) echo "usage: microemu-sideload prepare|install <apk> | installed <pkg>" >&2; exit 1 ;;
 esac

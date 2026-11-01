@@ -9,7 +9,8 @@ CONTEXT="${MICROEMU_PLAY_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${PL
 OLD_CONTEXT=
 [[ -n "${MICROEMU_PLAY_CONTEXT:-}" ]] || OLD_CONTEXT="${HOME}/.local/share/lepton/contexts/${PLAY_NAME}"
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
-ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
+ROMS_CMD="${MICROEMU_ANDROID_ROMS_CMD:-/usr/libexec/microemu/microemu-android-roms}"
+ROMS="${MICROEMU_ANDROID_ROMS:-}"
 
 gapps=0
 case "${1:-}" in
@@ -51,6 +52,9 @@ for context in "${CONTEXT}" "${OLD_CONTEXT}"; do
 done
 rm -rf "${DATA}/sideload" "${DATA}/prune"
 if (( gapps )); then
+    if [[ -z "${ROMS}" ]]; then
+        ROMS=$("${ROMS_CMD}") || fail "cannot read the Android folder"
+    fi
     if [[ -e "${GAPPS}" ]]; then
         chmod -R u+w "${GAPPS}" && rm -rf "${GAPPS}" || fail "cannot remove ${GAPPS}"
     fi

@@ -5,7 +5,8 @@ PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 [[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-gapps-install: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
 GAPPS="${MICROEMU_GAPPS:-${HOME}/.local/share/microemu/gapps}"
 CACHE="${MICROEMU_GAPPS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microemu/gapps}"
-ROMS="${MICROEMU_ANDROID_ROMS:-${HOME}/ROMs/androidgames}"
+ROMS_CMD="${MICROEMU_ANDROID_ROMS_CMD:-/usr/libexec/microemu/microemu-android-roms}"
+ROMS="${MICROEMU_ANDROID_ROMS:-}"
 UPDATE="${MICROEMU_PLAY_UPDATE:-/usr/bin/microemu-play-update}"
 FETCH="${MICROEMU_FETCH:-/usr/bin/microemu-fetch}"
 SET=mtg11-20230922.vending-36.6.25
@@ -155,11 +156,24 @@ fi
 
 ln -sfn "${SET}" "${GAPPS}/current.new"
 mv -T "${GAPPS}/current.new" "${GAPPS}/current"
+if [[ -z "${MICROEMU_ANDROID_ROMS:-}" ]]; then
+    ROMS=$("${ROMS_CMD}") || fail "cannot read the Android folder"
+fi
 mkdir -p "${ROMS}"
 [[ -f "${ROMS}/Google Play.play" ]] || printf 'com.android.vending\n' > "${ROMS}/Google Play.play"
-if [[ ! -e "${GAPPS}/update-entry" ]]; then
-    [[ -f "${ROMS}/Update Google Play.update" ]] || : > "${ROMS}/Update Google Play.update"
-    : > "${GAPPS}/update-entry"
+folder=$(realpath -e -- "${ROMS}") || fail "cannot resolve ${ROMS}"
+if [[ -f "${GAPPS}/update-entry" && ! -s "${GAPPS}/update-entry" ]]; then
+    printf '%s\n' "$(realpath -m -- "${HOME}/ROMs/androidgames")" > "${GAPPS}/update-entry"
+fi
+if ! grep -qxF -- "${folder}" "${GAPPS}/update-entry" 2>/dev/null; then
+    if [[ -z "$(find "${ROMS}" -type f -iname '*.update' -print -quit)" ]]; then
+        : > "${ROMS}/Update Google Play.update"
+    fi
+    {
+        grep -vxF -- "${folder}" "${GAPPS}/update-entry" 2>/dev/null || true
+        printf '%s\n' "${folder}"
+    } > "${GAPPS}/update-entry.new"
+    mv -T "${GAPPS}/update-entry.new" "${GAPPS}/update-entry"
 fi
 say "Google Play is on, updating Play and Play services before sign in (up to 20 min)"
 "${UPDATE}" --setup || fail "Play services not updated, run microemu-gapps-install again"

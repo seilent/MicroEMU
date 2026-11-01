@@ -47,6 +47,10 @@ for ((i = 1; i <= count; i++)); do
             [[ "${command}" == "/usr/bin/microos-session set-default %BASENAME%" ]] || fail "microos: command ${command}"
             continue
         fi
+        if [[ "${name}" == androidgames ]]; then
+            [[ "${command}" == "/usr/libexec/microemu/microemu-apk %ROM%" ]] || fail "androidgames: command ${command}"
+            continue
+        fi
         [[ "${command}" == /usr/libexec/microemu/bin/retroarch\ * ]] || fail "${name}: command is not the RetroArch wrapper: ${command}"
         exe=${command%% *}
         [[ -x "${data}${exe}" ]] || fail "${name}: ${exe} not shipped"
@@ -57,12 +61,19 @@ for ((i = 1; i <= count; i++)); do
     done
     if [[ "${name}" == microos ]]; then
         [[ "${path}" == %MICROOS_SESSIONS% && "${extensions}" == .session ]] || fail "microos: path ${path}, extensions ${extensions}"
+    elif [[ "${name}" == androidgames ]]; then
+        [[ "${path}" == "%ROMPATH%/androidgames" ]] || fail "androidgames: path ${path}"
+        [[ "${extensions}" == ".apk .APK .play .PLAY .update .UPDATE" ]] || fail "androidgames: extensions ${extensions}"
     else
         [[ "${path}" == "%ROMPATH%/${name}" ]] || fail "${name}: path ${path}"
     fi
 done
 [[ "$(xmllint --xpath 'count(/wrap/systemList/system[name="microos"])' "${systems}")" == 1 ]] || fail "no microos system"
-[[ "$(xmllint --xpath 'count(/wrap/systemList/system[name="androidgames"])' "${systems}")" == 0 ]] || fail "androidgames system shipped"
+[[ "$(xmllint --xpath 'count(/wrap/systemList/system[name="androidgames"])' "${systems}")" == 1 ]] || fail "no androidgames system"
+[[ "$(xmllint --xpath 'string(/wrap/systemList/system[name="androidgames"]/fullname)' "${systems}")" == "Android Games" ]] || fail "androidgames: fullname"
+[[ "$(xmllint --xpath 'string(/wrap/systemList/system[name="androidgames"]/platform)' "${systems}")" == android ]] || fail "androidgames: platform"
+[[ "$(xmllint --xpath 'string(/wrap/systemList/system[name="androidgames"]/theme)' "${systems}")" == androidgames ]] || fail "androidgames: theme"
+[[ -x "${data}/usr/libexec/microemu/microemu-apk" ]] || fail "microemu-apk not shipped"
 for core in ${cores}; do
     grep -q "/usr/lib64/libretro/${core} " "${systems}" || fail "core ${core} used by no system"
 done

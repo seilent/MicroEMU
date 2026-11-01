@@ -61,6 +61,8 @@ for file in "${units}"/*.service "${units}"/*.d/*.conf; do
     for exe in $(grep -oE '^Exec[A-Za-z]*=-?/[^ ]+' "${file}" | sed -E 's/^[^=]+=-?//'); do
         case "${exe}" in
             /usr/libexec/microemu/*) [[ -x "${data}${exe}" ]] || fail "$(basename "${file}"): ${exe} not shipped" ;;
+            /usr/bin/microemu-*) [[ -x "${data}${exe}" ]] || fail "$(basename "${file}"): ${exe} not shipped" ;;
+            /usr/bin/podman) ;;
             *) fail "$(basename "${file}"): ${exe} is not microemu's" ;;
         esac
     done
@@ -74,8 +76,8 @@ for line in 'ExecStop=-/usr/libexec/microemu/microemu-stop' 'ExecStopPost=-/usr/
     grep -qx "${line}" "${stop}" || fail "30-microemu-stop.conf lacks ${line}"
 done
 
-leftover=$(grep -rIl -i -E 'armada|session-control|/run/armada|lepton|EPOCHREALTIME|date \+%s|androidgames|microemu-play' "${data}" || true)
-[[ -z "${leftover}" ]] || fail "Armada, Android or wall clock names in data/: ${leftover}"
+leftover=$(grep -rIl -i -E 'armada|session-control|/run/armada|EPOCHREALTIME|date \+%s' "${data}" || true)
+[[ -z "${leftover}" ]] || fail "Armada or wall clock names in data/: ${leftover}"
 grep -rIl -E 'set-default-sink' "${data}" && fail "data/ sets the default sink"
 [[ -z "$(find "${data}" -path '*/etc/*' -o -name 'extension-release*' -o -name '*.raw')" ]] || fail "sysext or /etc files in data/"
 [[ -z "$(find "${data}" -mindepth 1 -maxdepth 1 ! -name usr)" ]] || fail "data/ holds more than usr/"

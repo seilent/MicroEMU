@@ -20,6 +20,7 @@ reset() {
     printf '#!/usr/bin/bash\necho "shaders $*" >> "%s/calls"\necho SLANG_SHADERS_COMMIT=abc\n' "${T}" > "${work}/build/shaders.sh"
     printf '#!/usr/bin/bash\necho "theme $*" >> "%s/calls"\nmkdir -p "$2/usr/share/microemu/es-de/themes/x/_inc"\necho THEME=art-book-next-es-de\n' "${T}" > "${work}/build/theme.sh"
     printf '#!/usr/bin/bash\necho "osd $*" >> "%s/calls"\necho OSD_REV=abc\n' "${T}" > "${work}/build/osd.sh"
+    printf '#!/usr/bin/bash\necho "stub $*" >> "%s/calls"\necho STUB_SHA256=abc\necho STUB_RC_SHA256=def\n' "${T}" > "${work}/build/stub.sh"
     : > "${T}/calls"
 }
 
@@ -37,16 +38,15 @@ run
 (cd "${repo}/data" && find . \( -type f -o -type l \) ! -path '*/__pycache__/*' | sort) > "${T}/want"
 (cd "${dest}" && find . \( -type f -o -type l \) | grep -v '^./usr/share/microemu/\(version\|build-manifest\)$' | sort) > "${T}/got"
 cmp -s "${T}/want" "${T}/got" || fail "installed files differ from data/: $(diff "${T}/want" "${T}/got")"
-for f in microemu-apk microemu-play-run microemu-sideload microemu-pad-nodes; do
-    [[ ! -e "${dest}/usr/libexec/microemu/${f}" ]] || fail "Android file ${f} installed"
-done
-[[ ! -e "${dest}/usr/share/microemu/android" ]] || fail "Android data installed"
+[[ -d "${dest}/usr/share/microemu/android/steam-empty" && -z "$(ls -A "${dest}/usr/share/microemu/android/steam-empty")" ]] || fail "steam-empty is not an empty dir"
+[[ "$(stat -c %a "${dest}/usr/share/microemu/android/steam-empty")" == 755 ]] || fail "steam-empty is not 0755"
 [[ "$(cat "${dest}/usr/share/microemu/version")" == test ]] || fail "version file"
-[[ "$(cat "${dest}/usr/share/microemu/build-manifest")" == $'MICROEMU_VERSION=test\nSLANG_SHADERS_COMMIT=abc\nTHEME=art-book-next-es-de\nOSD_REV=abc' ]] \
+[[ "$(cat "${dest}/usr/share/microemu/build-manifest")" == $'MICROEMU_VERSION=test\nSLANG_SHADERS_COMMIT=abc\nTHEME=art-book-next-es-de\nOSD_REV=abc\nSTUB_SHA256=abc\nSTUB_RC_SHA256=def' ]] \
     || fail "build manifest: $(cat "${dest}/usr/share/microemu/build-manifest")"
 [[ "$(cat "${T}/calls")" == "shaders ${T}/cache/shaders ${dest} ${work}/build/shaders-audit
 theme ${T}/cache/theme ${dest}
-osd ${T}/cache/osd ${dest}" ]] || fail "asset scripts: $(cat "${T}/calls")"
+osd ${T}/cache/osd ${dest}
+stub ${T}/cache/stub ${dest} ${work}/android/restrictions-stub" ]] || fail "asset scripts: $(cat "${T}/calls")"
 odd=$(find "${dest}" -mindepth 1 -type d ! -perm 0755)
 [[ -z "${odd}" ]] || fail "directories not 0755 under umask 0002: ${odd}"
 [[ -x "${dest}/usr/libexec/microemu/microemu-client" && -x "${dest}/usr/libexec/microemu/microemu-reconcile" ]] || fail "scripts not executable"
@@ -56,6 +56,17 @@ printf '#!/usr/bin/bash\nexit 3\n' > "${work}/build/theme.sh"
 run
 [[ "${rc}" != 0 ]] || fail "a failed asset script did not fail the install"
 [[ ! -e "${dest}/usr/share/microemu/build-manifest" ]] || fail "manifest written after a failed asset script"
+
+reset
+printf '#!/usr/bin/bash\nexit 4\n' > "${work}/build/stub.sh"
+run
+[[ "${rc}" != 0 ]] || fail "a failed stub did not fail the install"
+[[ ! -e "${dest}/usr/share/microemu/build-manifest" ]] || fail "manifest written after a failed stub"
+
+reset
+MICROEMU_STUB_CACHE="${T}/stub-cache" run
+[[ "${rc}" == 0 ]] || fail "stub cache override exit ${rc}: ${err}"
+[[ "$(tail -n 1 "${T}/calls")" == "stub ${T}/stub-cache ${dest} ${work}/android/restrictions-stub" ]] || fail "stub cache override: $(cat "${T}/calls")"
 
 reset
 rc=0

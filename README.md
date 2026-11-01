@@ -7,18 +7,25 @@ the `microemu` RPM.
 
 | Path | Content |
 |---|---|
-| `data/` | Files installed as is, `/usr` only. |
+| `data/` | Files installed as is, `/usr` only, Android pieces included. |
 | `build/` | `install.sh`, `shaders.sh` with `shaders-audit`, `theme.sh`, `osd.sh`, and `stub.sh` for Android. |
-| `android/` | Android games through Lepton: `data/` (not installed) and the `restrictions` stub source. |
+| `android/` | The `restrictions` stub source built by `build/stub.sh`. |
 | `tests/` | Bash tests, binaries stubbed through `PATH`, paths through `MICROEMU_*` variables. |
 
 ## Install
 
 `build/install.sh <destdir>` copies `data/` into `<destdir>` without `__pycache__` or `*.pyc`, then adds the pinned
-assets: the slang shaders and Retro Crisis presets (`shaders.sh`), the Art Book Next theme (`theme.sh`) and the volume
-glyph (`osd.sh`), and sets every dir under `<destdir>` to 0755 whatever the umask. Each download is checked against its sha256 and cached in `MICROEMU_CACHE` (default
-`build/cache/`); with a full cache it makes no network call. It writes `/usr/share/microemu/version`
-(`MICROEMU_VERSION`) and `build-manifest` (the asset revisions). `just install` installs into `dist/`.
+assets: the slang shaders and Retro Crisis presets (`shaders.sh`), the Art Book Next theme (`theme.sh`), the volume
+glyph (`osd.sh`) and the restrictions stub (`stub.sh`), makes `usr/share/microemu/android/steam-empty`, and sets every
+dir under `<destdir>` to 0755 whatever the umask. Each download is checked against its sha256 and cached in
+`MICROEMU_CACHE` (default `build/cache/`); the stub's `android.jar` and r8 go to `MICROEMU_STUB_CACHE` (default
+`<cache>/stub`). With a full cache it makes no network call. It writes `/usr/share/microemu/version`
+(`MICROEMU_VERSION`) and `build-manifest` (the asset and stub revisions). A failed asset script or stub fails the
+install before the manifest. `just install` installs into `dist/`.
+
+The stub needs a JDK (`javac`) and `java` on the build host; MicroOS builds it with `java-25-openjdk-devel`, and the
+first run needs the network for `platform-30_r03.zip` and r8 8.5.35. The built files go to
+`/usr/share/microemu/android/`, next to `steam-empty`, the empty `STEAM_COMPAT_CLIENT_INSTALL_PATH` Lepton gets.
 
 ES-DE comes from MicroOS's own `es-de` package, RetroArch and the 13 cores from Fedora (`/usr/bin/retroarch`,
 `/usr/lib64/libretro/`, `/usr/share/libretro/{info,autoconfig}`).
@@ -37,8 +44,10 @@ ES-DE comes from MicroOS's own `es-de` package, RetroArch and the 13 cores from 
 | `microemu-pad xb360` | Sets every InputPlumber composite device to `xb360` plus `keyboard` when InputPlumber takes its bus name, and each composite device InputPlumber adds after that (`InterfacesAdded`). Runs as long as the session (`microemu-pad.service`, bound to it, `After=` steamos-manager, restarted on failure). `deck-uhid` has no evdev pad while the Steam client is not running, so RetroArch reads the Xbox 360 pad. |
 | `30-microemu-stop.conf` | `ExecStop=-microemu-stop`, `ExecStopPost=-microemu-game-stop`, `TimeoutStopSec=25`, `TimeoutStopFailureMode=terminate`. |
 
-ES-DE loads only these systems: the shipped `es_systems.xml` has `<loadExclusive/>` before `<systemList>`, and every
-game command is the RetroArch wrapper.
+ES-DE loads only these systems: the shipped `es_systems.xml` has `<loadExclusive/>` before `<systemList>`; every game
+command is the RetroArch wrapper, `androidgames` runs `microemu-apk` and `microos` runs `microos-session`. The systems
+are `androidgames`, `atari2600`, `atari7800`, `atarilynx`, `fds`, `gameandwatch`, `gb`, `gba`, `gbc`, `nes`, `ngp`,
+`ngpc`, `pcengine`, `pcenginecd`, `psx`, `snes`, `virtualboy`, `wonderswan`, `wonderswancolor` and `microos`.
 
 ### BOOT INTO
 
@@ -287,14 +296,18 @@ and PCSX ReARMed cores on generated ROMs per layout, and is skipped without them
 `MICROEMU_OSD_TEST_THEME` and `MICROEMU_OSD_TEST_SPEAKER` override). The test pin overrides of `shaders.sh`, `osd.sh`,
 `stub.sh` and `microemu-gapps-install` (`MICROEMU_GAPPS_*`), and `microemu-client`'s `MICROEMU_TEST_FOLDERS` rows,
 apply only with `MICROEMU_TEST=1`; `microemu-keyboard-install` takes `MICROEMU_KEYBOARD_SIZE` and
-`MICROEMU_KEYBOARD_SHA` the same way.
+`MICROEMU_KEYBOARD_SHA` the same way. The Android tests run as an unprivileged account (as root `play-unit-test.sh`
+fails on a `chmod`). `install-test.sh` stubs `build/stub.sh`, so no JDK is needed there.
 
 ## Android
 
-Not installed. The pieces stay under `android/data/` with the paths they would install at; `game-stop.d/50-android` and the `androidgames` system are left out of `data/`. They still use `~/ROMs/androidgames`; they move to the storage pick with the Android work.
+The pieces are in `data/` with the paths they install at, and `build/install.sh` builds the restrictions stub with
+`build/stub.sh`. The Android folder is `androidgames` on the storage pick (`~/ROMs/androidgames`, or `ROMs/androidgames`
+on the card); `microemu-android-roms` prints it from `$XDG_RUNTIME_DIR/microemu/paths` (`roms` and `root`), and
+`MICROEMU_ANDROID_ROMS` overrides it. Every Android helper calls it.
 
-The `androidgames` system lists `.apk`, `.play` and `.update` files under `~/ROMs/androidgames/` and runs `/usr/libexec/microemu/microemu-apk
-<apk>`. Every Android game runs in one persistent Lepton context, `microemu-play`
+The `androidgames` system lists `.apk`, `.play` and `.update` files under that folder and runs
+`/usr/libexec/microemu/microemu-apk <apk>`. Every Android game runs in one persistent Lepton context, `microemu-play`
 (`~/.local/share/microemu/android/home/.local/share/lepton/contexts/microemu-play`, under the Valve `HOME` Lepton
 runs with), through `microemu-lepton`, which runs the reviewed Lepton runtime
 (Lepton Runtime below). The container lives for one game: only a stopped container gives ES-DE focus back.
@@ -313,8 +326,9 @@ and streams to the guest on stdin). An `.update` entry runs `microemu-play-updat
    to start (<result>), see ~/.local/share/microemu/android/boot.log and journalctl --user -u microemu-play.service`, or
    `android failed to start: <reason>` when `microemu-play-run` refused with a reason (it writes it to
    `$XDG_RUNTIME_DIR/microemu/play-start-failed`); the unit is then `reset-failed`. Canceled means `Result` `success` and the marker
-   `$XDG_RUNTIME_DIR/microemu/play-stop-requested`, which the `50-android` hook, `microemu-stop` and `microemu-apk`'s trap
-   write before they stop the unit and `microemu-apk` clears before the start; `Result` `success` without it is a start
+   `$XDG_RUNTIME_DIR/microemu/play-stop-requested`, which the `50-android` hook (also through `microemu-game-stop`, so
+   through `microemu-stop`) and `microemu-apk`'s trap write before they stop the unit, and `microemu-apk` clears before
+   the start; `Result` `success` without it is a start
    job refused before the unit ran: `android failed to start (start job failed: <ActiveState>/<SubState>)`.
 3. Fuzz 512 on `ABS_X`, `ABS_Y`, `ABS_RX`, `ABS_RY` of each InputPlumber `xb360` node (`Microsoft X-Box 360 pad`,
    `045e:028e`; `microemu-pad-nodes`, `microemu-pad-fuzz`): the PM2's right stick jitters at rest and Android dispatches
@@ -428,7 +442,7 @@ Sideloads (`microemu-sideload install`), with per package state in `~/.local/sha
 - Refused: an older version code than installed, a package installed from Play (`installer` in `packages.xml`, or
   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`).
 - A package whose file is gone is marked `stale`, never uninstalled; a file moved with the same content only updates
-  the path. Nothing is marked when `~/ROMs/androidgames` is missing, empty or a link to an absent target.
+  the path. Nothing is marked when the Android folder is missing, empty or a link to an absent target.
   `microemu-android-prune [<pkg>...]` queues stale packages; the next `.apk` launch uninstalls the ones still stale, and
   keeps a failed uninstall queued with its state.
 
@@ -447,7 +461,8 @@ the game's `wm_on_stop_called` event so it can save (the line names the activity
 own stop never counts), then force-stops the launched package (`$XDG_RUNTIME_DIR/microemu/play-pkg`, written by `microemu-apk` once it knows it: the
 `.apk`'s or `.play`'s package, or Play Store's for a `.play` not installed), then starts a
 `--no-block` stop of the unit; during the boot it only stops the unit. Each guest command is bounded at 1 s.
-`microemu-stop` stops the game, then ES-DE, then waits for the unit with what is left of its 15 s. B on the game's root
+`microemu-stop` runs `microemu-game-stop`, so the `50-android` hook writes the marker, then stops ES-DE and waits for the
+unit with what is left of its 15 s. B on the game's root
 activity reaches ES-DE about 2.6 to 3 s after the press (the watcher about 0.9 s plus up to 1 s waiting for the
 game's onStop, measured 0.3 s; the container stop about 1.7 s).
 
@@ -558,10 +573,10 @@ exists, or any `label=lepton=true` container exists):
    and writes `privapp-permissions-google-p.xml` with MTG 14's `com.android.vending` block. Every file is checked
    against its pinned sha256.
 3. Writes `STAMP` last (`set=<name>`, then `<sha256> <size> <path>` per file), makes the set read only, renames it,
-   points `current` at it (`ln -sfn` then `mv -T`), deletes the zips, and writes `~/ROMs/androidgames/Google Play.play`
-   when missing (a reinstall restores it), and `Update Google Play.update` plus the marker
-   `~/.local/share/microemu/gapps/update-entry` unless the marker exists. A complete set is left alone; a `.tmp` from an
-   interrupted run is removed first.
+   points `current` at it (`ln -sfn` then `mv -T`), deletes the zips, and writes `Google Play.play` in the Android folder
+   when missing (a reinstall restores it). For a folder not yet in the marker `~/.local/share/microemu/gapps/update-entry`
+   it also writes `Update Google Play.update`, then appends the folder to the marker. A complete set is left alone; a
+   `.tmp` from an interrupted run is removed first.
 4. Runs `microemu-play-update --setup` in the foreground and exits 1 with `Play services not updated, run microemu-gapps-install
    again` when it fails.
 
@@ -584,7 +599,7 @@ answering `IRestrictionsManager` with an empty `Bundle` and no provider. `build/
 The first boot with a new set grants GMS location and contacts permissions, then records the set in `microemu-stamp`,
 only when every grant succeeded (otherwise the next start retries).
 
-`.play` entries in `~/ROMs/androidgames/` hold one package name. `microemu-apk` refuses them while the layer is off;
+`.play` entries in the Android folder hold one package name. `microemu-apk` refuses them while the layer is off;
 otherwise it starts the container, then the package's launcher activity, or Play Store's when the package is not
 installed (`<pkg> not installed, opening Google Play`, the watcher on `com.android.vending`). `Google Play.play` opens
 the store.
@@ -592,9 +607,9 @@ the store.
 After every container stop, `microemu-android-sync` reads the context's `packages.xml` and Launcher3's `app_icons.db` on
 the host and writes `<label>.play` for each package installed from Play (`installer="com.android.vending"`) that is not
 a system or updated system package, not Play, GMS or GSF, and has a launcher label; a package already held by a
-`.play` file anywhere under `~/ROMs/androidgames/` is skipped, so renamed or moved entries stay. Names drop control,
+`.play` file anywhere under the Android folder is skipped, so renamed or moved entries stay. Names drop control,
 path and FAT illegal characters (`: ? * " < > |`) and are cut to 200 UTF-8 bytes; a failed write is logged and the
-next package goes on. Before that it deletes every `.play` file under `~/ROMs/androidgames/` whose package was in
+next package goes on. Before that it deletes every `.play` file under the Android folder whose package was in
 `packages.xml` at the previous sync and is not now (`removed <name>, <pkg> not installed`), except `Google Play.play`
 and `com.android.vending`; the previous set is kept in `~/.local/share/microemu/android/play-installed`, so a `.play`
 for a package that was never installed stays and opens Google Play. With `packages.xml` missing, unreadable or
@@ -648,6 +663,9 @@ min at <pkg>`, the next run goes on). Runs that end at the 20 min bound or with 
 the next run does. A stop request during the compile syncs, stops the container after 1 s and exits
 0 (`stop requested during the compile, the update is kept`).
 
+Every deadline here and in `microemu-apk-watch` counts uptime from `/proc/uptime`; `MICROEMU_UPTIME` points it at
+another file.
+
 `--clear-play` runs `pm clear com.android.vending` once Android booted, which makes Play schedule its updates at once;
 it also resets Play's own settings, so it is not the default. `ExecStopPost=` is `microemu-play-stop --post --headless`,
 so `microemu-android-sync` runs after it too.
@@ -660,10 +678,12 @@ until it ends or `device-off`. A stop is
 interrupted`, exit 2. In the foreground the command follows the journal with `-t microemu-play-update` and prints the
 unit's `Result` when it is not `success`, or `stopped` when the start failed and the unit was reset meanwhile.
 
-`microemu-android-sync` writes `Update Google Play.update` when the layer is on, the marker is absent and no `.update`
-file exists under `~/ROMs/androidgames/`, then the marker (also when a `.update` file exists), so a deleted entry
-stays deleted. `microemu-play-reset --gapps` also removes `~/.local/share/microemu/gapps/`, `Google Play.play` and
-`Update Google Play.update`.
+`microemu-android-sync` writes, for a folder the marker does not name yet, when the layer is on: `Google Play.play` when
+missing and `Update Google Play.update` when no `.update` file is under it, then appends the folder to the marker
+`~/.local/share/microemu/gapps/update-entry`. The marker is a set, one `realpath` folder per line, so a deletion
+in a folder sticks across home, card and home again, and an old empty marker means `~/ROMs/androidgames`.
+`microemu-play-reset --gapps` also removes `~/.local/share/microemu/gapps/`, `Google Play.play` and
+`Update Google Play.update` from the folder the pick names.
 
 
 ## License

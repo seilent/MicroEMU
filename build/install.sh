@@ -15,8 +15,9 @@ find "${dest}" \( -name __pycache__ -o -name '*.pyc' \) -prune -exec rm -rf {} +
 shaders=$(bash "${repo}/build/shaders.sh" "${cache}/shaders" "${dest}" "${repo}/build/shaders-audit")
 theme=$(bash "${repo}/build/theme.sh" "${cache}/theme" "${dest}")
 osd=$(bash "${repo}/build/osd.sh" "${cache}/osd" "${dest}")
+stub=$(bash "${repo}/build/stub.sh" "${MICROEMU_STUB_CACHE:-${cache}/stub}" "${dest}" "${repo}/android/restrictions-stub")
 
-mkdir -p "${share}"
+mkdir -p "${share}" "${share}/android/steam-empty"
 find "${dest}" -mindepth 1 -type d -exec chmod 0755 {} +
 echo "${version}" > "${share}/version"
 {
@@ -24,4 +25,5 @@ echo "${version}" > "${share}/version"
     echo "${shaders}"
     echo "${theme}"
     echo "${osd}"
+    echo "${stub}"
 } > "${share}/build-manifest"

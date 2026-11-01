@@ -5,7 +5,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-sync="${repo}/android/data/usr/libexec/microemu/microemu-android-sync"
+sync="${repo}/data/usr/libexec/microemu/microemu-android-sync"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
@@ -226,6 +226,7 @@ rm -f "${reload}"
 run
 [[ -f "${entry}" ]] || fail "update entry not written with the layer on"
 [[ -e "${MICROEMU_GAPPS}/update-entry" ]] || fail "update entry marker not written"
+[[ "$(cat "${MICROEMU_GAPPS}/update-entry")" == "$(realpath -e -- "${MICROEMU_ANDROID_ROMS}")" ]] || fail "marker is not the folder: $(cat "${MICROEMU_GAPPS}/update-entry")"
 [[ -e "${reload}" ]] || fail "no es-de reload request after the update entry"
 [[ "${err}" == *"wrote Update Google Play.update"* ]] || fail "update entry not logged: ${err}"
 rm -f "${entry}" "${reload}"
@@ -236,6 +237,52 @@ mkdir -p "${MICROEMU_ANDROID_ROMS}/sub"
 : > "${MICROEMU_ANDROID_ROMS}/sub/Mine.update"
 run
 [[ ! -e "${entry}" ]] || fail "update entry written next to an existing .update elsewhere"
+[[ "$(cat "${MICROEMU_GAPPS}/update-entry")" == "$(realpath -e -- "${MICROEMU_ANDROID_ROMS}")" ]] || fail "marker not appended next to an existing .update: $(cat "${MICROEMU_GAPPS}/update-entry")"
+
+fixture
+mkdir -p "${MICROEMU_GAPPS}/set"
+ln -s set "${MICROEMU_GAPPS}/current"
+first="${T}/card/ROMs/androidgames"
+second="${MICROEMU_ANDROID_ROMS}"
+mkdir -p "${first}"
+MICROEMU_ANDROID_ROMS="${first}" run
+for name in "Google Play.play" "Update Google Play.update"; do
+    [[ -f "${first}/${name}" ]] || fail "new folder: ${name} not written"
+done
+[[ "$(cat "${MICROEMU_GAPPS}/update-entry")" == "$(realpath -e -- "${first}")" ]] || fail "new folder: marker $(cat "${MICROEMU_GAPPS}/update-entry")"
+rm -f "${first}/Update Google Play.update"
+run
+[[ ! -e "${first}/Update Google Play.update" ]] || fail "home, card, home: the deletion did not stick"
+[[ -f "${first}/Google Play.play" ]] || fail "home, card, home: Google Play.play removed"
+[[ -f "${second}/Update Google Play.update" ]] || fail "home, card, home: the home folder got no entry"
+run
+MICROEMU_ANDROID_ROMS="${first}" run
+[[ "$(wc -l < "${MICROEMU_GAPPS}/update-entry")" == 2 ]] || fail "the marker is not the set of both folders: $(cat "${MICROEMU_GAPPS}/update-entry")"
+rm -f "${first}/Google Play.play"
+MICROEMU_ANDROID_ROMS="${first}" run
+[[ ! -e "${first}/Google Play.play" ]] || fail "Google Play.play written again in a folder in the set"
+
+fixture
+mkdir -p "${MICROEMU_GAPPS}/set"
+ln -s set "${MICROEMU_GAPPS}/current"
+: > "${MICROEMU_GAPPS}/update-entry"
+home="${T}/old-home"
+mkdir -p "${home}/ROMs/androidgames"
+HOME="${home}" MICROEMU_ANDROID_ROMS="${home}/ROMs/androidgames" run
+[[ ! -e "${home}/ROMs/androidgames/Update Google Play.update" ]] || fail "old empty marker: the entry was written for ~/ROMs/androidgames"
+[[ ! -s "${MICROEMU_GAPPS}/update-entry" ]] || fail "old empty marker: rewritten: $(cat "${MICROEMU_GAPPS}/update-entry")"
+HOME="${home}" run
+[[ -f "${entry}" ]] || fail "old empty marker: another folder got no entry"
+[[ "$(wc -l < "${MICROEMU_GAPPS}/update-entry")" == 2 ]] || fail "old empty marker: $(cat "${MICROEMU_GAPPS}/update-entry")"
+grep -qxF "$(realpath -e -- "${home}/ROMs/androidgames")" "${MICROEMU_GAPPS}/update-entry" || fail "old empty marker: the home folder left the set"
+
+fixture
+mkdir -p "${MICROEMU_GAPPS}/set"
+ln -s set "${MICROEMU_GAPPS}/current"
+printf '%s\n' "${T}/nowhere/androidgames" > "${MICROEMU_GAPPS}/update-entry"
+run
+[[ -f "${entry}" ]] || fail "a marker for another folder hid this one"
+[[ "$(wc -l < "${MICROEMU_GAPPS}/update-entry")" == 2 ]] || fail "the marker is not a set: $(cat "${MICROEMU_GAPPS}/update-entry")"
 
 fixture
 rc=0
@@ -256,6 +303,18 @@ env -u MICROEMU_PLAY_CONTEXT MICROEMU_PLAY_NAME=probe-lh-copy HOME="${T}/home" "
 [[ "${rc}" == 0 && "$(cat "${MICROEMU_ANDROID_ROMS}/Play Game Deluxe Edition.play" 2>/dev/null)" == com.example.playgame ]] \
     || fail "named, default context: exit ${rc}: $(cat "${T}/err")"
 rm -rf "${T:?}/home"
+
+fixture
+picked="${T}/picked/androidgames"
+mkdir -p "${picked}"
+printf '#!/usr/bin/bash\nprintf "%%s\\n" "%s"\n' "${picked}" > "${T}/roms-cmd"
+chmod 0755 "${T}/roms-cmd"
+rc=0
+env -u MICROEMU_ANDROID_ROMS T_CMD_ROMS="${picked}" MICROEMU_ANDROID_ROMS_CMD="${T}/roms-cmd" \
+    "${sync}" 2> "${T}/err" || rc=$?
+[[ "${rc}" == 0 ]] || fail "roms command: exit ${rc}: $(cat "${T}/err")"
+[[ "$(cat "${picked}/Play Game Deluxe Edition.play" 2>/dev/null)" == com.example.playgame ]] || fail "roms command: the picked folder was not used: $(ls "${picked}")"
+[[ ! -e "${MICROEMU_ANDROID_ROMS}/Play Game Deluxe Edition.play" ]] || fail "roms command: the env folder was used"
 
 if (( failures )); then
     echo "sync-test: ${failures} failure(s)" >&2

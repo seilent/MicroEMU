@@ -5,14 +5,15 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-update="${repo}/android/data/usr/bin/microemu-play-update"
+update="${repo}/data/usr/bin/microemu-play-update"
 
 T=$(mktemp -d)
-trap 'rm -rf "${T}"' EXIT
+clock_pid=
+trap 'clock_stop; rm -rf "${T}"' EXIT
 mkdir -p "${T}/bin"
 export STATE="${T}/state"
 export MICROEMU_PLAY_RUN="${T}/bin/play-run"
-export MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move"
+export MICROEMU_CONTEXT_MOVE="${repo}/data/usr/libexec/microemu/microemu-context-move"
 export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
 export MICROEMU_GAPPS="${T}/gapps"
 export MICROEMU_PLAY_UPDATE_POLL_S=0.1
@@ -21,8 +22,46 @@ export XDG_RUNTIME_DIR="${T}/run"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
 export MICROEMU_GAMESCOPE="${T}/bin/gamescope"
 export MICROEMU_HEADLESS_WAIT_S=3
-export MICROEMU_DISPLAY_FILE="${repo}/android/data/usr/share/microemu/android/display"
+export MICROEMU_DISPLAY_FILE="${repo}/data/usr/share/microemu/android/display"
 export MICROEMU_ANDROID_DATA="${T}/data/android"
+uptime="${T}/uptime"
+offset="${T}/offset"
+ln -s /proc/uptime "${uptime}"
+export MICROEMU_UPTIME="${uptime}"
+now_ms() {
+    local up _ file=${MICROEMU_UPTIME:-/proc/uptime}
+    read -r up _ < "${file}"
+    printf '%d\n' $(( 10#${up%.*} * 1000 + 10#${up#*.} * 10 ))
+}
+export -f now_ms
+clock_start() {
+    echo 0 > "${offset}"
+    export CLOCK_OFFSET="${offset}"
+    touch "${T}/clock"
+    rm -f "${uptime}"
+    read -r up _ < /proc/uptime
+    printf '%d.%02d 0.00\n' "${up%.*}" "${up#*.}" > "${uptime}"
+    (
+        while [[ -e "${T}/clock" ]]; do
+            read -r up _ < /proc/uptime
+            printf '%d.%02d 0.00\n' $(( 10#${up%.*} + $(cat "${offset}") )) $(( 10#${up#*.} )) > "${uptime}.new"
+            mv -fT "${uptime}.new" "${uptime}"
+            sleep 0.05
+        done
+    ) &
+    clock_pid=$!
+}
+clock_jump() {
+    echo "$1" > "${offset}"
+}
+clock_stop() {
+    rm -f "${T}/clock"
+    if [[ -n "${clock_pid:-}" ]]; then
+        kill "${clock_pid}" 2>/dev/null || true
+        wait "${clock_pid}" 2>/dev/null || true
+    fi
+    clock_pid=
+}
 headless_dir="${MICROEMU_RUNTIME_DIR}/headless"
 clear_marker="${MICROEMU_RUNTIME_DIR}/play-update-clear"
 setup_marker="${MICROEMU_RUNTIME_DIR}/play-update-setup"
@@ -92,6 +131,11 @@ STUB
 cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
 echo "podman $*" >> "${STATE}/calls"
+uptime_now() {
+    local up _
+    read -r up _ < "${MICROEMU_UPTIME}"
+    printf '%d\n' $(( 10#${up%.*} * 1000 + 10#${up#*.} * 10 ))
+}
 args="$*"
 args=${args//lepton-headless-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-headless-microemu-play}
 case "${args//lepton-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-microemu-play}" in
@@ -99,11 +143,16 @@ case "${args//lepton-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-microemu-play}"
     "container exists lepton-headless-microemu-play") [[ ! -e "${STATE}/no_container" ]] ;;
     "stop -t "*" lepton-headless-microemu-play") : > "${STATE}/stopped" ;;
     "exec lepton-headless-microemu-play /system/bin/sync") ;;
-    "exec lepton-headless-microemu-play /system/bin/getprop sys.boot_completed") [[ ! -e "${STATE}/getprop_slow" ]] || sleep 5; v=$(cat "${STATE}/booted"); echo "booted=${v}" >> "${STATE}/calls"; echo "${v}" ;;
+    "exec lepton-headless-microemu-play /system/bin/getprop sys.boot_completed")
+        [[ ! -e "${STATE}/getprop_slow" ]] || sleep 5
+        v=$(cat "${STATE}/booted")
+        echo "booted=${v}" >> "${STATE}/calls"
+        echo "${v}"
+        [[ ! -e "${STATE}/jump" ]] || echo "$(cat "${STATE}/jump")" > "${CLOCK_OFFSET}" ;;
     "exec lepton-headless-microemu-play /system/bin/dumpsys package installs") sleep "$(cat "${STATE}/dumpsys_sleep" 2>/dev/null || echo 0)"; cat "${STATE}/dumpsys" ;;
     "exec lepton-headless-microemu-play /system/bin/pm clear com.android.vending") exit "$(cat "${STATE}/clear_rc")" ;;
     "exec lepton-headless-microemu-play /system/bin/pidof dex2oat64 dex2oat32 dex2oat")
-        if [[ -e "${STATE}/dex2oat_until" ]] && (( $(date +%s%N) / 1000000 < $(cat "${STATE}/dex2oat_until") )); then
+        if [[ -e "${STATE}/dex2oat_until" ]] && (( $(uptime_now) < $(cat "${STATE}/dex2oat_until") )); then
             echo 4242
             exit 0
         fi
@@ -152,7 +201,9 @@ write_packages() {
 }
 
 reset() {
+    clock_stop
     rm -rf "${STATE}" "${MICROEMU_PLAY_CONTEXT}" "${MICROEMU_GAPPS}" "${MICROEMU_RUNTIME_DIR}"
+    ln -sfn /proc/uptime "${uptime}"
     mkdir -p "${STATE}" "${MICROEMU_GAPPS}/set"
     ln -s set "${MICROEMU_GAPPS}/current"
     : > "${STATE}/calls"
@@ -171,9 +222,9 @@ reset() {
 body() {
     rc=0
     local start
-    start=$(date +%s%3N)
+    start=$(now_ms)
     "${update}" --body 2> "${STATE}/stderr" || rc=$?
-    took=$(( $(date +%s%3N) - start ))
+    took=$(( $(now_ms) - start ))
 }
 
 has() { grep -qxF -- "microemu-play-update: $1" "${STATE}/stderr" || fail "${case_name}: missing line: $1, got $(cat "${STATE}/stderr")"; }
@@ -298,6 +349,21 @@ called "podman stop -t 5 lepton-headless-microemu-play"
 (( took < 4000 )) || fail "${case_name}: took ${took} ms"
 grep -q "not done" "${STATE}/stderr" && fail "${case_name}: logged as not done"
 
+case_name="maintenance, already current on a jumped clock"
+reset ""
+write_packages 263737022 85343420
+clock_start
+echo 800 > "${STATE}/jump"
+real_start=$(date +%s%3N)
+MICROEMU_PLAY_UPDATE_QUIET_S=780 body
+real=$(($(date +%s%3N) - real_start))
+[[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
+has "already current after 13 min: GMS 263737022, Play 85343420"
+called "podman stop -t 5 lepton-headless-microemu-play"
+(( real < 4000 )) || fail "${case_name}: took ${real} ms of real time, the quiet bound waited for wall time"
+grep -q "not done" "${STATE}/stderr" && fail "${case_name}: logged as not done"
+rm -f "${STATE}/jump"
+
 case_name="maintenance, session at the quiet bound"
 reset "session 1"
 write_packages 263737022 85343420
@@ -313,7 +379,7 @@ reset "sleep 0.2;write 263737022 85343520"
 write_packages 263737022 85343420
 mkdir -p "${MICROEMU_PLAY_CONTEXT}"
 printf 'com.google.android.gms 263737022\n' > "${MICROEMU_PLAY_CONTEXT}/microemu-compiled"
-echo $(( $(date +%s%N) / 1000000 + 60000 )) > "${STATE}/dex2oat_until"
+echo $(( $(now_ms) + 60000 )) > "${STATE}/dex2oat_until"
 MICROEMU_PLAY_UPDATE_SETTLE_S=1 MICROEMU_PLAY_UPDATE_QUIET_S=1 MICROEMU_PLAY_UPDATE_BOUND_S=2 body
 [[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
 has "stopped after 0 min: GMS 263737022, Play 85343520"
@@ -375,14 +441,14 @@ case_name="maintenance, slow dumpsys interrupted"
 reset ""
 write_packages 263737022 85343420
 echo 5 > "${STATE}/dumpsys_sleep"
-start=$(date +%s%3N)
+start=$(now_ms)
 "${update}" --body 2> "${STATE}/stderr" &
 pid=$!
 sleep 0.6
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
-took=$(( $(date +%s%3N) - start - 600 ))
+took=$(( $(now_ms) - start - 600 ))
 [[ "${rc}" == 2 ]] || fail "${case_name}: exit ${rc}"
 (( took < 1500 )) || fail "${case_name}: TERM took ${took} ms during a dumpsys"
 [[ ! -e "${MICROEMU_RUNTIME_DIR}/play-update-dumpsys" ]] || fail "${case_name}: dumpsys file left"
@@ -452,14 +518,14 @@ grep -q "^podman stop" "${STATE}/calls" && fail "${case_name}: stop after the ex
 case_name="interrupted"
 reset ""
 write_packages 204516046 83662520
-start=$(date +%s%3N)
+start=$(now_ms)
 "${update}" --body 2> "${STATE}/stderr" &
 pid=$!
 sleep 0.5
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 [[ "${rc}" == 2 ]] || fail "${case_name}: exit ${rc}"
 has "stop requested, update interrupted (GMS 204516046, Play 83662520)"
 called "podman stop -t 1 lepton-headless-microemu-play"
@@ -556,9 +622,9 @@ grep -q "start" "${STATE}/calls" && fail "${case_name}: unit started"
 
 case_name="no block"
 reset ""
-start=$(date +%s%3N)
+start=$(now_ms)
 run --no-block
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 [[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}"
 called "systemctl --user start --no-block microemu-play-update.service"
 grep -q "journalctl" "${STATE}/calls" && fail "${case_name}: journal followed"
@@ -567,9 +633,9 @@ grep -qx "update started in the background, see journalctl --user -u microemu-pl
 
 case_name="foreground"
 reset ""
-start=$(date +%s%3N)
+start=$(now_ms)
 run
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 (( took < 5000 )) || fail "${case_name}: took ${took} ms, the journal follower held it"
 [[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}"
 called "systemctl --user start microemu-play-update.service"
@@ -688,11 +754,11 @@ echo 3 > "${STATE}/gamescope_delay"
 MICROEMU_HEADLESS_WAIT_S=5 "${update}" --body 2> "${STATE}/stderr" &
 pid=$!
 sleep 0.5
-start=$(date +%s%3N)
+start=$(now_ms)
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 [[ "${rc}" == 2 ]] || fail "${case_name}: exit ${rc}"
 (( took < 1500 )) || fail "${case_name}: took ${took} ms"
 grep -q '^play-run' "${STATE}/calls" && fail "${case_name}: android started"
@@ -706,11 +772,11 @@ echo 0 > "${STATE}/booted"
 "${update}" --body 2> "${STATE}/stderr" &
 pid=$!
 sleep 1
-start=$(date +%s%3N)
+start=$(now_ms)
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 [[ "${rc}" == 2 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
 (( took < 1500 )) || fail "${case_name}: TERM took ${took} ms during a getprop"
 
@@ -721,11 +787,11 @@ write_packages 204516046 83662520
 "${update}" --body 2> "${STATE}/stderr" &
 pid=$!
 sleep 0.6
-start=$(date +%s%3N)
+start=$(now_ms)
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 [[ "${rc}" == 2 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
 (( took < 1500 )) || fail "${case_name}: took ${took} ms"
 grep -q "podman stop" "${STATE}/calls" && fail "${case_name}: podman stop on a missing container"
@@ -761,7 +827,7 @@ called "journalctl --user -f -n 0 -o cat -u microemu-play-update.service -t micr
 case_name="setup waits for dex2oat"
 reset "sleep 0.2;write 263737022 85343420"
 write_packages 204516046 83662520
-echo $(( $(date +%s%N) / 1000000 + 1500 )) > "${STATE}/dex2oat_until"
+echo $(( $(now_ms) + 1500 )) > "${STATE}/dex2oat_until"
 body
 [[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
 has "dex2oat running"
@@ -770,7 +836,7 @@ has "dex2oat running"
 case_name="maintenance settle counts from dex2oat"
 reset "sleep 0.2;write 263737022 85343520"
 write_packages 263737022 85343420
-echo $(( $(date +%s%N) / 1000000 + 1500 )) > "${STATE}/dex2oat_until"
+echo $(( $(now_ms) + 1500 )) > "${STATE}/dex2oat_until"
 MICROEMU_PLAY_UPDATE_SETTLE_S=1 MICROEMU_PLAY_UPDATE_QUIET_S=30 body
 [[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}: $(cat "${STATE}/stderr")"
 grep -q "^microemu-play-update: done in" "${STATE}/stderr" || fail "${case_name}: no done line: $(cat "${STATE}/stderr")"
@@ -828,15 +894,15 @@ case_name="TERM during the compile"
 reset ""
 write_packages 263737022 85343420
 echo 10 > "${STATE}/compile_sleep"
-start=$(date +%s%3N)
+start=$(now_ms)
 MICROEMU_PLAY_UPDATE_QUIET_S=1 "${update}" --body 2> "${STATE}/stderr" &
 pid=$!
 for _ in $(seq 1 60); do grep -q "compile -m speed" "${STATE}/calls" && break; sleep 0.1; done
-t0=$(date +%s%3N)
+t0=$(now_ms)
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
-took=$(( $(date +%s%3N) - t0 ))
+took=$(( $(now_ms) - t0 ))
 [[ "${rc}" == 0 ]] || fail "${case_name}: exit ${rc}"
 has "stop requested during the compile, the update is kept"
 called "podman stop -t 1 lepton-headless-microemu-play"

@@ -26,6 +26,7 @@ REPORT_S="${MICROEMU_PLAY_UPDATE_REPORT_S:-60}"
 SETTLE_S="${MICROEMU_PLAY_UPDATE_SETTLE_S:-30}"
 QUIET_S="${MICROEMU_PLAY_UPDATE_QUIET_S:-780}"
 COMPILE_S="${MICROEMU_PLAY_COMPILE_S:-600}"
+UPTIME="${MICROEMU_UPTIME:-/proc/uptime}"
 COMPILED="${CONTEXT}/microemu-compiled"
 LIST="${CLEAR%/*}/play-update-packages"
 GMS_TREE=204516046
@@ -37,6 +38,12 @@ say() {
 }
 
 log() { printf 'microemu-play-update: %s\n' "$*" >&2; }
+
+now_ms() {
+    local up _
+    read -r up _ < "${UPTIME}"
+    printf '%d\n' $(( 10#${up%.*} * 1000 + 10#${up#*.} * 10 ))
+}
 
 package_versions() {
     python3 - "${PACKAGES}" "$@" <<'PY' 2>/dev/null
@@ -88,7 +95,8 @@ read_dex2oat() {
 }
 
 compile_changed() {
-    local start=$(( ${EPOCHREALTIME/./} / 1000 )) rc pkg version line done_list='' count=0 total
+    local start rc pkg version line done_list='' count=0 total
+    start=$(now_ms)
     local -a targets changed
     rc=0
     guest_job 30 /system/bin/cmd_real package list packages -3 || rc=$?
@@ -107,9 +115,9 @@ compile_changed() {
     for line in "${changed[@]}"; do
         read -r pkg version <<<"${line}"
         rc=0
-        guest_job $(( COMPILE_S - (${EPOCHREALTIME/./} / 1000 - start) / 1000 + 1 )) /system/bin/cmd_real package compile -m speed "${pkg}" || rc=$?
+        guest_job $(( COMPILE_S - ($(now_ms) - start) / 1000 + 1 )) /system/bin/cmd_real package compile -m speed "${pkg}" || rc=$?
         (( rc == 255 )) && compile_interrupted
-        if (( ${EPOCHREALTIME/./} / 1000 - start >= COMPILE_S * 1000 )); then
+        if (( $(now_ms) - start >= COMPILE_S * 1000 )); then
             log "compile stopped after $(( COMPILE_S / 60 )) min at ${pkg}, ${count} of ${total} done, the next update run goes on"
             break
         fi
@@ -260,7 +268,8 @@ move_context() {
 }
 
 body() {
-    local start=$(( ${EPOCHREALTIME/./} / 1000 )) gms=0 vending=0 seen_gms=0 seen_vending=0 next_report now sleep_pid clear=0 setup=0 changed_at=0 active=0 sessions busy_at=0 session_seen=0 gms_session=0 start_gms booted=0 boot_at=0 rc dex2oat=0 dex_logged=0
+    local start gms=0 vending=0 seen_gms=0 seen_vending=0 next_report now sleep_pid clear=0 setup=0 changed_at=0 active=0 sessions busy_at=0 session_seen=0 gms_session=0 start_gms booted=0 boot_at=0 rc dex2oat=0 dex_logged=0
+    start=$(now_ms)
     stopping=0
     run_pid=
     gamescope_pid=
@@ -305,7 +314,7 @@ body() {
             log "android exited before the update (GMS ${seen_gms}, Play ${seen_vending})"
             exit 1
         fi
-        now=$(( ${EPOCHREALTIME/./} / 1000 ))
+        now=$(now_ms)
         if (( ! booted )) && guest_booted; then
             booted=1
             boot_at=${now}

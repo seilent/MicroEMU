@@ -5,6 +5,7 @@ PLAY_NAME="${MICROEMU_PLAY_NAME:-microemu-play}"
 [[ "${PLAY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "microemu-apk-watch: bad MICROEMU_PLAY_NAME ${PLAY_NAME}" >&2; exit 1; }
 CONTAINER=lepton-${PLAY_NAME}
 STOP_WAIT_MS="${MICROEMU_STOP_WAIT_MS:-1000}"
+UPTIME="${MICROEMU_UPTIME:-/proc/uptime}"
 pkg=$1
 activity=${2:-}
 [[ "${activity}" =~ ^[A-Za-z0-9_$]+(\.[A-Za-z0-9_$]+)+$ ]] || activity=
@@ -20,6 +21,12 @@ game_stopped() {
 say() {
     logger -t microemu-apk -- "$*" 2>/dev/null || true
     printf 'microemu-apk: %s\n' "$*" >&2
+}
+
+now_ms() {
+    local up _
+    read -r up _ < "${UPTIME}"
+    printf '%d\n' $(( 10#${up%.*} * 1000 + 10#${up#*.} * 10 ))
 }
 
 end() {
@@ -44,7 +51,7 @@ stopped=0
 deadline=
 while :; do
     if [[ -n "${deadline}" ]]; then
-        left=$(( deadline - ${EPOCHREALTIME/./} / 1000 ))
+        left=$(( deadline - $(now_ms) ))
         (( left > 0 )) || end launcher
         IFS= read -r -t "$(printf '%d.%03d' $(( left / 1000 )) $(( left % 1000 )))" -u 3 line
         rc=$?
@@ -59,7 +66,7 @@ while :; do
         *wm_set_resumed_activity*"[0,com.android.launcher3/"*)
             if (( armed )); then
                 (( stopped )) && end launcher
-                deadline=$(( ${EPOCHREALTIME/./} / 1000 + STOP_WAIT_MS ))
+                deadline=$(( $(now_ms) + STOP_WAIT_MS ))
             fi
             ;;
         *wm_on_stop_called*)

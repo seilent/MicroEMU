@@ -3,12 +3,12 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-libexec="${repo}/android/data/usr/libexec/microemu"
+libexec="${repo}/data/usr/libexec/microemu"
 launcher="${libexec}/microemu-lepton"
 override="${libexec}/microemu-liblepton.sh"
-opts="${repo}/android/data/usr/share/microemu/android/opts"
-reviewed="${repo}/android/data/usr/share/microemu/android/lepton-reviewed"
-unit="${repo}/android/data/usr/lib/systemd/user/microemu-play.service"
+opts="${repo}/data/usr/share/microemu/android/opts"
+reviewed="${repo}/data/usr/share/microemu/android/lepton-reviewed"
+unit="${repo}/data/usr/lib/systemd/user/microemu-play.service"
 
 T=$(mktemp -d)
 holder=
@@ -1886,7 +1886,7 @@ for dir in images/rootfs sysbake; do
 done
 rm -rf "${T}/snaps-links" "${T}/outside-rootfs" "${T}/outside-sysbake"
 
-play_run="${repo}/android/data/usr/libexec/microemu/microemu-play-run"
+play_run="${repo}/data/usr/libexec/microemu/microemu-play-run"
 play_data="${T}/play-data"
 play_home="${play_data}/home"
 play_ctx="${play_home}/.local/share/lepton/contexts/microemu-play"
@@ -1907,10 +1907,10 @@ STUB
 chmod 0755 "${STATE}/after-run"
 rc=0
 XDG_STATE_HOME="${T}/play-state" MICROEMU_ANDROID_DATA="${play_data}" MICROEMU_PLAY_POLL_S=0.05 \
-    MICROEMU_DISPLAY_FILE="${repo}/android/data/usr/share/microemu/android/display" \
+    MICROEMU_DISPLAY_FILE="${repo}/data/usr/share/microemu/android/display" \
     MICROEMU_GAPPS="${T}/play-gapps" MICROEMU_STUB_DIR="${T}/play-stub" \
-    MICROEMU_ANDROID_OPTS="${repo}/android/data/usr/share/microemu/android/opts" \
-    MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move" \
+    MICROEMU_ANDROID_OPTS="${repo}/data/usr/share/microemu/android/opts" \
+    MICROEMU_CONTEXT_MOVE="${repo}/data/usr/libexec/microemu/microemu-context-move" \
     MICROEMU_LEPTON_DIR_CMD="${T}/play-bin/lepton-dir" MICROEMU_LEPTON="${launcher}" \
     MICROEMU_PAD_NODES="${T}/play-bin/pad-nodes" \
     STEAM_COMPAT_DATA_PATH="${play_ctx}" \

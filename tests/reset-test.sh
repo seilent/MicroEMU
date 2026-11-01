@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-reset_cmd="${repo}/android/data/usr/bin/microemu-play-reset"
+reset_cmd="${repo}/data/usr/bin/microemu-play-reset"
 
 T=$(mktemp -d)
 trap 'chmod -R u+w "${T}" 2>/dev/null; rm -rf "${T}"' EXIT
@@ -201,6 +201,20 @@ run --gapps
 [[ ! -e "${MICROEMU_ANDROID_ROMS}/Update Google Play.update" ]] || fail "Update Google Play.update left"
 [[ -f "${MICROEMU_ANDROID_ROMS}/Game.play" ]] || fail "a game .play removed"
 [[ ! -e "${MICROEMU_PLAY_CONTEXT}" ]] || fail "--gapps kept the context"
+
+reset inactive
+printf '#!/usr/bin/bash\nprintf "%%s\\n" "${T_CMD_ROMS}"\n' > "${T}/roms-cmd"
+chmod 0755 "${T}/roms-cmd"
+picked="${T}/picked/androidgames"
+mkdir -p "${picked}"
+echo com.android.vending > "${picked}/Google Play.play"
+: > "${picked}/Update Google Play.update"
+rc=0
+env -u MICROEMU_ANDROID_ROMS T_CMD_ROMS="${picked}" MICROEMU_ANDROID_ROMS_CMD="${T}/roms-cmd" \
+    "${reset_cmd}" --gapps > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 ]] || fail "roms cmd: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${picked}/Google Play.play" && ! -e "${picked}/Update Google Play.update" ]] || fail "roms cmd: the picked folder was not cleaned"
+[[ -e "${MICROEMU_ANDROID_ROMS}/Google Play.play" ]] || fail "roms cmd: the env folder was touched"
 
 reset inactive
 run --bogus

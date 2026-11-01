@@ -34,6 +34,7 @@ test-android:
     bash tests/reset-test.sh
     bash tests/pad-fuzz-test.sh
     bash tests/stub-test.sh
+    bash tests/android-roms-test.sh
     bash tests/gapps-install-test.sh
     bash tests/keyboard-test.sh
     bash tests/play-update-test.sh

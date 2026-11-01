@@ -1,0 +1,21 @@
+#!/usr/bin/bash
+set -u
+
+PATHS="${MICROEMU_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microemu}/paths"
+
+value() { sed -n "s/^$1=//p" "${PATHS}" 2>/dev/null | head -n 1; }
+
+home=$(realpath -m -- "${HOME}")
+roms=$(value roms)
+if [[ "${roms}" == /* && -d "${roms}" && ! -L "${roms}" ]]; then
+    roms=$(realpath -e -- "${roms}" 2>/dev/null) || roms=
+else
+    roms=
+fi
+if [[ -n "${roms}" && "${roms}" != "${home}" && "${roms}" != "${home}/"* ]]; then
+    root=$(value root)
+    root=$(realpath -e -- "${root:-/nonexistent}" 2>/dev/null) || root=
+    mount=$(findmnt -rno TARGET -T "${roms}" 2>/dev/null) || mount=
+    [[ -n "${root}" && "${mount}" == "${root}" ]] || roms=
+fi
+printf '%s\n' "${roms:-${home}/ROMs}/androidgames"

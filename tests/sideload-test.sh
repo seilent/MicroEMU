@@ -5,8 +5,8 @@ export PYTHONDONTWRITEBYTECODE=1
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-sideload="${repo}/android/data/usr/libexec/microemu/microemu-sideload"
-prune="${repo}/android/data/usr/bin/microemu-android-prune"
+sideload="${repo}/data/usr/libexec/microemu/microemu-sideload"
+prune="${repo}/data/usr/bin/microemu-android-prune"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
@@ -17,7 +17,7 @@ export MICROEMU_ANDROID_DATA="${T}/data"
 export MICROEMU_ANDROID_CACHE="${T}/cache"
 export MICROEMU_ANDROID_ROMS="${T}/roms"
 export MICROEMU_APK_INFO="${T}/bin/apk-info-extractor"
-export MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move"
+export MICROEMU_CONTEXT_MOVE="${repo}/data/usr/libexec/microemu/microemu-context-move"
 xml="${MICROEMU_PLAY_CONTEXT}/baked/data_overlay/system/packages.xml"
 states="${MICROEMU_ANDROID_DATA}/sideload"
 
@@ -421,12 +421,12 @@ grep -qxF "extractor --print-app-id ${a2048}" "${STATE}/extractor" || fail "the 
 rm -rf "${T}/runtime"
 
 case_name="steamapps common Lepton named twice"
-named=$(grep -rl 'steamapps/common/Lepton' "${repo}/android/data" "${repo}/build" | sort | tr '\n' ' ')
-[[ "${named}" == "${repo}/android/data/usr/libexec/microemu/microemu-lepton ${repo}/android/data/usr/libexec/microemu/microemu-lepton-dir " ]] \
+named=$(grep -rl 'steamapps/common/Lepton' "${repo}/data" "${repo}/build" | sort | tr '\n' ' ')
+[[ "${named}" == "${repo}/data/usr/libexec/microemu/microemu-lepton ${repo}/data/usr/libexec/microemu/microemu-lepton-dir " ]] \
     || fail "steamapps/common/Lepton is named by: ${named}"
 
 case_name="no armada names"
-named=$(grep -rIl -i armada "${repo}/android/data" | sort | tr '\n' ' ')
+named=$(grep -rIl -i armada "${repo}/data" | sort | tr '\n' ' ')
 [[ -z "${named}" ]] || fail "armada named by: ${named}"
 
 case_name="prune with nothing stale"
@@ -434,6 +434,22 @@ reset
 rc=0
 "${prune}" > "${STATE}/prune-out" || rc=$?
 [[ "${rc}" == 0 ]] && grep -q "no stale package" "${STATE}/prune-out" || fail "exit ${rc}: $(cat "${STATE}/prune-out")"
+
+case_name="folder from the roms command"
+reset
+picked="${T}/picked/androidgames"
+mkdir -p "${picked}"
+apk="${picked}/base.apk"
+make_apk "${apk}" one com.example.one 1
+make_apk "${picked}/other.apk" two com.example.two 2
+printf '#!/usr/bin/bash\nprintf "%%s\\n" "${T_CMD_ROMS}"\n' > "${T}/roms-cmd"
+chmod 0755 "${T}/roms-cmd"
+rc=0
+: > "${STATE}/guest"
+out=$(env -u MICROEMU_ANDROID_ROMS T_CMD_ROMS="${picked}" MICROEMU_ANDROID_ROMS_CMD="${T}/roms-cmd" \
+    "${sideload}" install "${apk}" 2> "${STATE}/stderr") || rc=$?
+[[ "${rc}" == 0 && "${out}" == com.example.one ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+grep -q 'install-create' "${STATE}/guest" && fail "a base in the picked folder bundled its neighbours: $(cat "${STATE}/guest")"
 
 if (( failures )); then
     echo "sideload-test: ${failures} failure(s)" >&2

@@ -3,8 +3,8 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-apk="${repo}/android/data/usr/libexec/microemu/microemu-apk"
-watch="${repo}/android/data/usr/libexec/microemu/microemu-apk-watch"
+apk="${repo}/data/usr/libexec/microemu/microemu-apk"
+watch="${repo}/data/usr/libexec/microemu/microemu-apk-watch"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
@@ -12,6 +12,19 @@ mkdir -p "${T}/bin" "${T}/roms"
 export STATE="${T}/state"
 export HOME="${T}"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
+uptime="${T}/uptime"
+ln -s /proc/uptime "${uptime}"
+export MICROEMU_UPTIME="${uptime}"
+now_ms() {
+    local up _ file=${MICROEMU_UPTIME:-/proc/uptime}
+    read -r up _ < "${file}"
+    printf '%d\n' $(( 10#${up%.*} * 1000 + 10#${up#*.} * 10 ))
+}
+export -f now_ms
+clock() {
+    printf '%s 0.00\n' "$1" > "${T}/uptime.fixed"
+    ln -sfn "${T}/uptime.fixed" "${uptime}"
+}
 marker="${MICROEMU_RUNTIME_DIR}/play-stop-requested"
 export MICROEMU_LEPTON="${T}/bin/lepton"
 export MICROEMU_SIDELOAD="${T}/bin/sideload"
@@ -105,6 +118,10 @@ case "${args//lepton-${MICROEMU_PLAY_NAME:-microemu-play}/lepton-microemu-play}"
                 sleep*) sleep "${line#sleep }" ;;
                 *) echo "${line}" ;;
             esac
+            if [[ -e "${STATE}/jump" && "${line}" == *"[0,com.android.launcher3/"* ]]; then
+                printf '%s\n' "$(cat "${STATE}/jump")" > "${MICROEMU_UPTIME}"
+                echo "I/wm_set_resumed_activity(  221): [0,com.example.other/.Main,minimalResumeActivityLocked]"
+            fi
         done < "${STATE}/logcat" ;;
     *"am force-stop "*) ;;
 esac
@@ -128,6 +145,7 @@ fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 reset() {
     rm -rf "${STATE}"
+    ln -sfn /proc/uptime "${uptime}"
     mkdir -p "${STATE}"
     : > "${STATE}/calls"
     : > "${STATE}/log"
@@ -174,9 +192,9 @@ logged "gamescope-session-plus@microemu.service is not active, refusing"
 case_name="lepton missing"
 reset
 mv "${MICROEMU_LEPTON}" "${MICROEMU_LEPTON}.off"
-start=$(date +%s%3N)
+start=$(now_ms)
 outer "${rom}"
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 mv "${MICROEMU_LEPTON}.off" "${MICROEMU_LEPTON}"
 [[ "${rc}" == 1 ]] || fail "${case_name}: exit ${rc}"
 (( took < 2000 )) || fail "${case_name}: took ${took} ms"
@@ -460,9 +478,9 @@ stopped="I/wm_on_stop_called( 1301): [0,com.uberspot.a2048.MainActivity,STOP_ACT
 case_name="watch launcher"
 reset
 printf '%s\n' "${resume_launcher}" "${resume_pkg}" "sleep 0.1" "${resume_launcher}" "sleep 0.3" "${stopped}" "sleep 5" > "${STATE}/logcat"
-start=$(date +%s%3N)
+start=$(now_ms)
 watch_run
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 logged "com.uberspot.a2048 launcher, ending the game"
 [[ "$(count "${force}")" == 1 ]] || fail "${case_name}: no force-stop"
 (( took >= 350 && took < 900 )) || fail "${case_name}: took ${took} ms, expected the stop event about 0.4 s in"
@@ -470,9 +488,9 @@ logged "com.uberspot.a2048 launcher, ending the game"
 case_name="watch launcher without a stop event"
 reset
 printf '%s\n' "${resume_pkg}" "${resume_launcher}" "sleep 5" > "${STATE}/logcat"
-start=$(date +%s%3N)
+start=$(now_ms)
 watch_run
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 logged "com.uberspot.a2048 launcher, ending the game"
 [[ "$(count "${force}")" == 1 ]] || fail "${case_name}: no force-stop"
 (( took >= 900 && took < 1800 )) || fail "${case_name}: took ${took} ms, expected the 1 s bound"
@@ -481,18 +499,18 @@ case_name="watch another package's stop"
 reset
 other_stop="I/wm_on_stop_called( 1100): [0,com.uberspot.a2048x.MainActivity,STOP_ACTIVITY_ITEM]"
 printf '%s\n' "${resume_pkg}" "${resume_launcher}" "${other_stop}" "sleep 0.4" "${stopped}" "sleep 5" > "${STATE}/logcat"
-start=$(date +%s%3N)
+start=$(now_ms)
 watch_run
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 (( took >= 350 && took < 900 )) || fail "${case_name}: took ${took} ms, expected the game's stop at about 0.4 s"
 
 case_name="watch launcher3 stop before the game's"
 reset
 launcher_stop="I/wm_on_stop_called(  640): [0,com.android.launcher3.uioverrides.QuickstepLauncher,STOP_ACTIVITY_ITEM]"
 printf '%s\n' "${resume_pkg}" "sleep 0.1" "${launcher_stop}" "sleep 0.1" "${resume_launcher}" "sleep 0.4" "${stopped}" "sleep 5" > "${STATE}/logcat"
-start=$(date +%s%3N)
+start=$(now_ms)
 watch_run
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 logged "com.uberspot.a2048 launcher, ending the game"
 (( took >= 550 && took < 1100 )) || fail "${case_name}: took ${took} ms, expected the game's stop about 0.6 s in"
 
@@ -500,9 +518,9 @@ case_name="watch unity activity outside the package"
 reset
 printf '%s\n' "I/wm_set_resumed_activity(  221): [0,com.example.unitygame/com.unity3d.player.UnityPlayerActivity,minimalResumeActivityLocked]" \
     "${resume_launcher}" "sleep 0.3" "I/wm_on_stop_called( 1301): [0,com.unity3d.player.UnityPlayerActivity,STOP_ACTIVITY_ITEM]" "sleep 5" > "${STATE}/logcat"
-start=$(date +%s%3N)
+start=$(now_ms)
 watch_run com.example.unitygame com.unity3d.player.UnityPlayerActivity
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 logged "com.example.unitygame launcher, ending the game"
 (( took >= 250 && took < 800 )) || fail "${case_name}: took ${took} ms, expected the stop at about 0.3 s"
 
@@ -510,9 +528,9 @@ case_name="watch com.android package with only launcher3's stop"
 reset
 printf '%s\n' "I/wm_set_resumed_activity(  221): [0,com.android/com.android.Game,minimalResumeActivityLocked]" \
     "${resume_launcher}" "I/wm_on_stop_called(  640): [0,com.android.launcher3.uioverrides.QuickstepLauncher,STOP_ACTIVITY_ITEM]" "sleep 5" > "${STATE}/logcat"
-start=$(date +%s%3N)
+start=$(now_ms)
 watch_run com.android com.android.Game
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 (( took >= 900 && took < 1800 )) || fail "${case_name}: took ${took} ms, expected the full 1 s wait"
 
 for activity in com.foo.Main ""; do
@@ -520,20 +538,41 @@ for activity in com.foo.Main ""; do
     reset
     printf '%s\n' "I/wm_set_resumed_activity(  221): [0,com.foo/com.foo.Main,minimalResumeActivityLocked]" \
         "${resume_launcher}" "I/wm_on_stop_called( 1400): [0,com.foobar.Main,STOP_ACTIVITY_ITEM]" "sleep 5" > "${STATE}/logcat"
-    start=$(date +%s%3N)
+    start=$(now_ms)
     watch_run com.foo "${activity}"
-    took=$(( $(date +%s%3N) - start ))
+    took=$(( $(now_ms) - start ))
     (( took >= 900 && took < 1800 )) || fail "${case_name}: took ${took} ms, expected the full 1 s wait"
 done
 
 case_name="watch stop before the launcher"
 reset
 printf '%s\n' "${resume_pkg}" "${stopped}" "${resume_launcher}" "sleep 5" > "${STATE}/logcat"
-start=$(date +%s%3N)
+start=$(now_ms)
 watch_run
-took=$(( $(date +%s%3N) - start ))
+took=$(( $(now_ms) - start ))
 logged "com.uberspot.a2048 launcher, ending the game"
 (( took < 600 )) || fail "${case_name}: took ${took} ms"
+
+case_name="watch launcher on the stopped clock"
+reset
+clock 100
+printf '%s\n' "${resume_pkg}" "${resume_launcher}" "sleep 5" > "${STATE}/logcat"
+watch_run
+logged "com.uberspot.a2048 launcher, ending the game"
+[[ "$(count "${force}")" == 1 ]] || fail "${case_name}: no force-stop"
+
+case_name="watch launcher on a jump past the wait"
+reset
+clock 100
+echo 102 > "${STATE}/jump"
+printf '%s\n' "${resume_pkg}" "${resume_launcher}" "sleep 5" > "${STATE}/logcat"
+real_start=$(date +%s%3N)
+watch_run
+took=$(( $(date +%s%3N) - real_start ))
+logged "com.uberspot.a2048 launcher, ending the game"
+[[ "$(count "${force}")" == 1 ]] || fail "${case_name}: no force-stop"
+(( took < 500 )) || fail "${case_name}: took ${took} ms of real time, the watcher waited for wall time"
+rm -f "${STATE}/jump"
 
 case_name="watch launcher before the game"
 reset

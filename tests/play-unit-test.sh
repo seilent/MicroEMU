@@ -3,7 +3,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-libexec="${repo}/android/data/usr/libexec/microemu"
+libexec="${repo}/data/usr/libexec/microemu"
 run_script="${libexec}/microemu-play-run"
 stop_script="${libexec}/microemu-play-stop"
 
@@ -16,7 +16,7 @@ export MICROEMU_LEPTON="${T}/bin/lepton"
 export MICROEMU_LEPTON_DIR_CMD="${T}/bin/lepton-dir"
 export MICROEMU_PAD_NODES="${T}/bin/pad-nodes"
 export MICROEMU_KEYBOARD_INSTALL="${T}/bin/keyboard-install"
-export MICROEMU_DISPLAY_FILE="${repo}/android/data/usr/share/microemu/android/display"
+export MICROEMU_DISPLAY_FILE="${repo}/data/usr/share/microemu/android/display"
 export MICROEMU_PLAY_CONTEXT="${T}/contexts/microemu-play"
 export MICROEMU_RUNTIME_DIR="${T}/run/microemu"
 export MICROEMU_ANDROID_DATA="${T}/data/android"
@@ -25,8 +25,8 @@ export MICROEMU_STEAM_PIPE="${T}/steam.pipe"
 export MICROEMU_GAPPS="${T}/gapps"
 export MICROEMU_STUB_DIR="${T}/stub"
 export MICROEMU_ANDROID_SYNC="${T}/bin/sync"
-export MICROEMU_ANDROID_OPTS="${repo}/android/data/usr/share/microemu/android/opts"
-export MICROEMU_CONTEXT_MOVE="${repo}/android/data/usr/libexec/microemu/microemu-context-move"
+export MICROEMU_ANDROID_OPTS="${repo}/data/usr/share/microemu/android/opts"
+export MICROEMU_CONTEXT_MOVE="${repo}/data/usr/libexec/microemu/microemu-context-move"
 export STATE_HOME="${T}/xdg-state"
 printf 'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\n' > "${T}/lepton/images/rootfs/vendor/odm/etc/build.prop"
 echo 3.0.5 > "${T}/lepton/version.txt"
@@ -705,7 +705,7 @@ rc=0
 "${stop_script}" --bogus 2>/dev/null || rc=$?
 [[ "${rc}" == 1 ]] || fail "unknown verb exit ${rc}"
 
-unit="${repo}/android/data/usr/lib/systemd/user/microemu-play.service"
+unit="${repo}/data/usr/lib/systemd/user/microemu-play.service"
 for line in BindsTo=gamescope-session-plus@microemu.service Type=notify NotifyAccess=all \
     Environment=MICROEMU_PLAY_NAME=microemu-play 'ExecStartPre=/usr/bin/podman rm -fi lepton-${MICROEMU_PLAY_NAME}' \
     ExecStart=/usr/libexec/microemu/microemu-play-run \
@@ -715,7 +715,7 @@ for line in BindsTo=gamescope-session-plus@microemu.service Type=notify NotifyAc
 done
 grep -q '^After=' "${unit}" && fail "unit is ordered after something"
 
-unit="${repo}/android/data/usr/lib/systemd/user/microemu-play-update.service"
+unit="${repo}/data/usr/lib/systemd/user/microemu-play-update.service"
 for line in Type=oneshot KillMode=mixed Environment=MICROEMU_PLAY_NAME=microemu-play \
     'ExecStartPre=/usr/bin/podman rm -fi lepton-headless-${MICROEMU_PLAY_NAME}' \
     'ExecStart=/usr/bin/microemu-play-update --body' 'ExecStopPost=/usr/libexec/microemu/microemu-play-stop --post --headless' \
