@@ -527,7 +527,8 @@ default, `.steam/steam.pipe` made as a FIFO there),
 `internal/` before the start. A snapshot of the context as it was is kept at
 `~/.local/share/microemu/android/backups/<context>.pre-<buildid>.bak` (`--reflink=auto`, through `podman unshare` since
 `baked/data_overlay` belongs to podman's subuids), one per context, written as `<backup>.part` and renamed when it is
-complete, with the older one removed afterwards; a copy that fails refuses the start and leaves the older backup.
+complete, with the older `<context>.pre-<buildid>.bak` removed afterwards (other names in `backups/` stay); a copy that
+fails refuses the start and leaves the older backup.
 
 Any call of a view's `lepton` goes through `microemu-liblepton.sh`. It exits 1 unless `$0` and the file bash reads the
 script from (`/proc/$$/fd/255`) are the runtime's `lepton`, the call is `start <context>` with a name the launcher

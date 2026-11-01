@@ -1729,6 +1729,8 @@ cycle probe-lh-bk env STEAM_COMPAT_DATA_PATH="${bkctx}" "${launcher}" start prob
     || fail "context backup: taken again on the same runtime"
 more=("${backups}"/probe-lh-bk.pre-*.bak)
 [[ "${#more[@]}" == 1 ]] || fail "context backup: more than one: $(ls -A "${backups}")"
+mkdir -p "${backups}/probe-lh-bk.pre-by-hand.bak"
+echo mine > "${backups}/probe-lh-bk.pre-by-hand.bak/keep"
 rm -rf "${T}/snaps-old" "${T}/reviewed-old"
 mkdir -p "${T}/snaps-old" "${T}/reviewed-old"
 cp -a "${rt}" "${T}/snaps-old/25772113"
@@ -1738,6 +1740,9 @@ cycle probe-lh-bk env MICROEMU_LEPTON_SNAPSHOTS="${T}/snaps-old" MICROEMU_LEPTON
 [[ "${rc}" == 0 ]] || fail "context backup on a new runtime: exit ${rc}: $(out probe-lh-bk)"
 [[ -d "${backups}/probe-lh-bk.pre-25772113.bak" ]] || fail "context backup on a new runtime: not made: $(ls -A "${backups}")"
 [[ ! -e "${backups}/probe-lh-bk.pre-25772114.bak" ]] || fail "context backup on a new runtime: the last one only: $(ls -A "${backups}")"
+[[ "$(cat "${backups}/probe-lh-bk.pre-by-hand.bak/keep" 2>/dev/null)" == mine ]] \
+    || fail "context backup on a new runtime: pruned a backup it did not make: $(ls -A "${backups}")"
+rm -rf "${backups:?}/probe-lh-bk.pre-by-hand.bak"
 rm -rf "${T}/snaps-old" "${T}/reviewed-old"
 
 rm -rf "${backups}"

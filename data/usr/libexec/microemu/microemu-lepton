@@ -244,6 +244,7 @@ if [[ -d "${context}" && ! -L "${context}" && ! -e "${backup}" ]]; then
     mv -T "${backup}.part" "${backup}" || fail "cannot move the backup into ${backup}, refusing"
     for old in "${DATA}/backups/${context##*/}.pre-"*.bak; do
         [[ "${old}" != "${backup}" ]] || continue
+        [[ "${old##*/}" =~ ^${context##*/}\.pre-[0-9]+\.bak$ ]] || continue
         podman unshare rm -rf "${old:?}" || say "cannot remove the old backup ${old}"
     done
     say "kept ${backup}"
