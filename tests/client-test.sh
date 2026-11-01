@@ -53,7 +53,7 @@ echo "microos-session $*" >> "${STATE}/calls"
 case "$1" in
     list)
         [[ ! -e "${STATE}/list_fail" ]] || exit 1
-        printf 'steam\tSteam\tyes\nrecovery\tRecovery\tno\nmicrodap\tMicro<DAP> & "co"\tyes\n../x\tBad\tyes\nUpper\tBad\tyes\na b\tBad\tyes\nx;reboot\tBad\tyes\n-x\tBad\tyes\nx%%20y\tBad\tyes\nmicroemu\tMicroEMU\tyes\n'
+        printf 'steam\tSteam\tyes\nrecovery\tRecovery\tno\nmicrodap\tMicro<DAP> & "co"\tyes\n../x\tBad\tyes\nUpper\tBad\tyes\na b\tBad\tyes\nx;reboot\tBad\tyes\n-x\tBad\tyes\nx%%20y\tBad\tyes\nmicroemu\tMicro EMU\tyes\n'
         ;;
     back)
         rc=$(head -n 1 "${STATE}/back_rc")

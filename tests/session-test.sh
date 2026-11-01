@@ -17,7 +17,7 @@ fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 value() { sed -n "s/^$1=//p" "$2"; }
 
-[[ "$(cat "${registry}")" == $'LABEL=MicroEMU\nDESKTOP=microemu.desktop\nUNIT=gamescope-session-plus@microemu.service\nSTOP=unit\nDEFAULT=yes\nGAME_SCOPE=microemu-game.scope' ]] \
+[[ "$(cat "${registry}")" == $'LABEL=Micro EMU\nDESKTOP=microemu.desktop\nUNIT=gamescope-session-plus@microemu.service\nSTOP=unit\nDEFAULT=yes\nGAME_SCOPE=microemu-game.scope' ]] \
     || fail "sessions.d/microemu.conf: $(cat "${registry}")"
 [[ "$(value GAME_SCOPE "${registry}")" =~ ^[a-z0-9][a-z0-9@._-]*\.scope$ ]] || fail "GAME_SCOPE does not match hotkeyd's rule"
 desktop=$(value DESKTOP "${registry}")
@@ -26,8 +26,7 @@ grep -qx 'Exec=gamescope-session-plus microemu' "${data}/usr/share/wayland-sessi
 
 [[ "$(cat "${hotkeys}/microemu.conf")" == $'lc hold unit microemu-lc.service\nvolup press volume up\nvoldown press volume down' ]] \
     || fail "hotkeys.d/microemu.conf: $(cat "${hotkeys}/microemu.conf")"
-[[ "$(cat "${hotkeys}/steam.conf.d/50-microemu.conf")" == 'lc hold switch microemu confirm-in-game' ]] || fail "steam.conf.d row"
-[[ "$(cat "${hotkeys}/microdap.conf.d/50-microemu.conf")" == 'lc hold switch microemu' ]] || fail "microdap.conf.d row"
+[[ ! -e "${hotkeys}/steam.conf.d/50-microemu.conf" && ! -e "${hotkeys}/microdap.conf.d/50-microemu.conf" ]] || fail "an LC row outside the microemu session"
 [[ -f "${units}/microemu-lc.service" ]] || fail "microemu-lc.service not shipped"
 grep -qx 'ExecStart=/usr/libexec/microemu/microemu-lc' "${units}/microemu-lc.service" || fail "microemu-lc.service ExecStart"
 grep -qx 'Type=oneshot' "${units}/microemu-lc.service" || fail "microemu-lc.service is not a oneshot"

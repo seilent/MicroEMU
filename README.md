@@ -27,7 +27,7 @@ ES-DE comes from MicroOS's own `es-de` package, RetroArch and the 13 cores from 
 
 | Path | Does |
 |---|---|
-| `/usr/lib/microos/sessions.d/microemu.conf` | `LABEL=MicroEMU`, `STOP=unit`, `DEFAULT=yes`, `GAME_SCOPE=microemu-game.scope` (a switch out of MicroEMU with a core running asks for the confirm) |
+| `/usr/lib/microos/sessions.d/microemu.conf` | `LABEL=Micro EMU`, `STOP=unit`, `DEFAULT=yes`, `GAME_SCOPE=microemu-game.scope` (a switch out of MicroEMU with a core running asks for the confirm) |
 | `/usr/share/wayland-sessions/microemu.desktop` | `gamescope-session-plus microemu` |
 | `/usr/share/gamescope-session-plus/sessions.d/microemu` | `CLIENTCMD=microemu-client`, `GAMESCOPE_BIN=microemu-gamescope`; `ORIENTATION=left` when `microemu.orientation` is `landscape-flipped` (`microset get`, 5 s), else no `ORIENTATION` and gamescope takes landscape from the panel's DT `rotation`. The launcher sources this file after `device-quirks`, so the value wins |
 | `microemu-gamescope` | Drops `--steam` and execs `/usr/bin/gamescope`. Without `--steam`, gamescope focuses ES-DE and the windows it starts with no `STEAM_GAME` atoms. |
@@ -53,8 +53,6 @@ hotkeyd tables, read by MicroOS's `microos-hotkeyd`:
 | File | Rows |
 |---|---|
 | `hotkeys.d/microemu.conf` | `lc hold unit microemu-lc.service`, `volup press volume up`, `voldown press volume down` |
-| `hotkeys.d/steam.conf.d/50-microemu.conf` | `lc hold switch microemu confirm-in-game` |
-| `hotkeys.d/microdap.conf.d/50-microemu.conf` | `lc hold switch microemu` |
 
 `microemu-lc` stops the game when `microemu-game-running` reports one, else runs `microos-session back`.
 `microemu-game-running` counts `microemu-game.scope` active, activating, reloading or deactivating, and the launch
