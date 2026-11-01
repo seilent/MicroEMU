@@ -1,5 +1,6 @@
 #!/usr/bin/bash
 set -eu
+unset MICROEMU_STUB_CACHE
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
